@@ -28,6 +28,11 @@ class HybridQueryConfig(BaseModel):
 class AdvancedMilvusClient(MilvusClient):
     """Advanced Milvus client with additional features."""
     
+    def __init__(self, config: Union[str, MilvusConfig]):
+        """Initialize the advanced client."""
+        super().__init__(config)
+        self.collection = self._get_collection()
+        
     def create_partition(self, partition_config: PartitionConfig) -> None:
         """Create a new partition."""
         try:

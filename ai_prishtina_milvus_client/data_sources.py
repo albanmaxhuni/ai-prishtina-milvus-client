@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 import pandas as pd
 import h5py
-import parquet
+import pyarrow.parquet as pq
 import yaml
 from pydantic import BaseModel, Field
 

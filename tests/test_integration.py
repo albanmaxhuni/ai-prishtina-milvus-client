@@ -39,15 +39,16 @@ def create_temp_config(csv_path, collection_name="integration_test_collection"):
     return temp.name
 
 
-def create_milvus_config(collection_name="integration_test_collection"):
+def create_milvus_config(collection_name="integration_test_collection", dim=128, metadata_fields=None):
     return MilvusConfig(
         host="localhost",
         port=19530,
         collection_name=collection_name,
-        dim=128,
+        dim=dim,
         index_type="IVF_FLAT",
         metric_type="L2",
         nlist=1024,
+        metadata_fields=metadata_fields,
     )
 
 
@@ -64,7 +65,11 @@ def test_end_to_end_file_ingestion_and_search():
     ]
     csv_path = create_temp_csv(vectors, metadata)
     config_path = create_temp_config(csv_path)
-    milvus_config = create_milvus_config()
+    milvus_config = create_milvus_config(metadata_fields=[
+        {"name": "category", "type": "str"},
+        {"name": "score", "type": "float"},
+        {"name": "tags", "type": "str"},
+    ])
 
     # Ingest and search
     with MilvusClient(milvus_config) as client:
@@ -99,7 +104,11 @@ def test_hybrid_search_with_metadata_filter():
     ]
     csv_path = create_temp_csv(vectors, metadata)
     config_path = create_temp_config(csv_path, collection_name="hybrid_test_collection")
-    milvus_config = create_milvus_config(collection_name="hybrid_test_collection")
+    milvus_config = create_milvus_config(collection_name="hybrid_test_collection", metadata_fields=[
+        {"name": "category", "type": "str"},
+        {"name": "score", "type": "float"},
+        {"name": "tags", "type": "str"},
+    ])
 
     # Ingest and hybrid search
     with MilvusClient(milvus_config) as client:
@@ -163,6 +172,10 @@ def test_multimodal_image_text_ingestion_and_search():
         index_type="IVF_FLAT",
         metric_type="L2",
         nlist=1024,
+        metadata_fields=[
+            {"name": "caption", "type": "str"},
+            {"name": "source", "type": "str"},
+        ],
     )
     # Ingest and search
     with MilvusClient(milvus_config) as client:
@@ -227,6 +240,10 @@ def test_multimodal_audio_text_ingestion_and_search():
         index_type="IVF_FLAT",
         metric_type="L2",
         nlist=1024,
+        metadata_fields=[
+            {"name": "transcript", "type": "str"},
+            {"name": "duration", "type": "float"},
+        ],
     )
     # Ingest and search
     with MilvusClient(milvus_config) as client:

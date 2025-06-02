@@ -76,7 +76,7 @@ def test_json_data_source(sample_data, config):
     vectors, metadata = sample_data
     
     # Create JSON file
-    with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as f:
+    with tempfile.NamedTemporaryFile(suffix='.json', mode='w', delete=False) as f:
         data = [
             {"vector": v, **m}
             for v, m in zip(vectors, metadata)
@@ -181,7 +181,7 @@ def test_pickle_data_source(sample_data, config):
     vectors, metadata = sample_data
     
     # Create Pickle file
-    with tempfile.NamedTemporaryFile(suffix='.pkl', delete=False) as f:
+    with tempfile.NamedTemporaryFile(suffix='.pkl', mode='wb', delete=False) as f:
         data = [
             {"vector": v, **m}
             for v, m in zip(vectors, metadata)
@@ -207,7 +207,7 @@ def test_yaml_data_source(sample_data, config):
     vectors, metadata = sample_data
     
     # Create YAML file
-    with tempfile.NamedTemporaryFile(suffix='.yaml', delete=False) as f:
+    with tempfile.NamedTemporaryFile(suffix='.yaml', mode='w', delete=False) as f:
         data = [
             {"vector": v, **m}
             for v, m in zip(vectors, metadata)
@@ -233,8 +233,8 @@ def test_load_data_source(sample_data, config):
     vectors, metadata = sample_data
     
     # Create temporary files
-    with tempfile.NamedTemporaryFile(suffix='.csv', delete=False) as data_file, \
-         tempfile.NamedTemporaryFile(suffix='.yaml', delete=False) as config_file:
+    with tempfile.NamedTemporaryFile(suffix='.csv', mode='w', delete=False) as data_file, \
+         tempfile.NamedTemporaryFile(suffix='.yaml', mode='w', delete=False) as config_file:
         
         # Create data file
         df = pd.DataFrame({

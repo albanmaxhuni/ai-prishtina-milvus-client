@@ -76,7 +76,17 @@ class OpenAIClient(APIClient):
             }
         )
         response.raise_for_status()
-        return [{"text": choice["text"]} for choice in response.json()["choices"]]
+        results = []
+        for choice in response.json()["choices"]:
+            text = choice["text"].strip()
+            lines = text.split("\n")
+            metadata = {}
+            for line in lines:
+                if ":" in line:
+                    key, value = line.split(":", 1)
+                    metadata[key.strip().lower()] = value.strip()
+            results.append(metadata)
+        return results
 
 
 class HuggingFaceClient(APIClient):
@@ -106,7 +116,13 @@ class HuggingFaceClient(APIClient):
             }
         )
         response.raise_for_status()
-        return response.json()
+        results = []
+        for item in response.json():
+            results.append({
+                "category": item["label"],
+                "score": item["score"]
+            })
+        return results
 
 
 class CohereClient(APIClient):
@@ -138,7 +154,13 @@ class CohereClient(APIClient):
             }
         )
         response.raise_for_status()
-        return response.json()["classifications"]
+        results = []
+        for item in response.json()["classifications"]:
+            results.append({
+                "category": item["prediction"],
+                "score": item["confidence"]
+            })
+        return results
 
 
 class GoogleVertexAIClient(APIClient):

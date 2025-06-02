@@ -236,7 +236,12 @@ def stream_config():
 @patch("confluent_kafka.Producer")
 def test_kafka_stream_processor(mock_producer, mock_consumer, config, stream_config):
     """Test Kafka stream processor."""
-    processor = KafkaStreamProcessor(config, stream_config)
+    # Create a mock client
+    mock_client = MagicMock()
+    mock_client.insert = MagicMock()
+    
+    # Create processor with mock client
+    processor = KafkaStreamProcessor(config, stream_config, client=mock_client)
     
     # Test message production
     message = StreamMessage(

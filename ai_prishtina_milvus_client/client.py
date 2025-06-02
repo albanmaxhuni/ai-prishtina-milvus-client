@@ -34,18 +34,21 @@ class MilvusClient:
     and handles connection management and error handling.
     """
     
-    def __init__(self, config_path: str):
+    def __init__(self, config: Union[str, MilvusConfig]):
         """
         Initialize the Milvus client.
         
         Args:
-            config_path: Path to the YAML configuration file
+            config: Either a path to the YAML configuration file or a MilvusConfig instance
             
         Raises:
             ConfigurationError: If the configuration is invalid
             ConnectionError: If connection to Milvus fails
         """
-        self.config = MilvusConfig.from_yaml(config_path)
+        if isinstance(config, str):
+            self.config = MilvusConfig.from_yaml(config)
+        else:
+            self.config = config
         self._connect()
         self._collection = None
         
@@ -95,6 +98,28 @@ class MilvusClient:
                 FieldSchema(name="id", dtype=DataType.INT64, is_primary=True, auto_id=True),
                 FieldSchema(name="vector", dtype=DataType.FLOAT_VECTOR, dim=self.config.dim),
             ]
+            # Add metadata fields if present
+            if getattr(self.config, 'metadata_fields', None):
+                type_map = {
+                    "int": DataType.INT64,
+                    "int64": DataType.INT64,
+                    "float": DataType.FLOAT,
+                    "float32": DataType.FLOAT,
+                    "double": DataType.DOUBLE,
+                    "float64": DataType.DOUBLE,
+                    "str": DataType.VARCHAR,
+                    "string": DataType.VARCHAR,
+                    "bool": DataType.BOOL,
+                    "json": DataType.JSON,
+                }
+                for field in self.config.metadata_fields:
+                    field_name = field["name"]
+                    field_type = field["type"].lower()
+                    dtype = type_map.get(field_type, DataType.VARCHAR)
+                    if dtype == DataType.VARCHAR:
+                        fields.append(FieldSchema(name=field_name, dtype=dtype, max_length=512))
+                    else:
+                        fields.append(FieldSchema(name=field_name, dtype=dtype))
             schema = CollectionSchema(fields=fields, description="Vector collection")
             self._collection = Collection(
                 name=self.config.collection_name,

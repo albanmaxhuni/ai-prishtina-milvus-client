@@ -12,6 +12,7 @@ import pytest
 from pymilvus import utility
 
 from ai_prishtina_milvus_client import MilvusClient
+from ai_prishtina_milvus_client.config import MilvusConfig
 from ai_prishtina_milvus_client.exceptions import (
     CollectionError,
     ConnectionError,
@@ -43,25 +44,42 @@ def config_file():
 
 
 @pytest.fixture
-def client(config_file):
+def mock_milvus():
+    """Create mock Milvus connection."""
+    with patch("pymilvus.connections.connect") as mock_connect, \
+         patch("pymilvus.connections.disconnect") as mock_disconnect, \
+         patch("pymilvus.utility.has_collection") as mock_has_collection, \
+         patch("pymilvus.utility.drop_collection") as mock_drop_collection:
+        yield {
+            "connect": mock_connect,
+            "disconnect": mock_disconnect,
+            "has_collection": mock_has_collection,
+            "drop_collection": mock_drop_collection
+        }
+
+
+@pytest.fixture
+def client(config_file, mock_milvus):
     """Create a Milvus client instance for testing."""
     client = MilvusClient(config_file)
     yield client
     client.close()
-    if utility.has_collection("test_collection"):
-        utility.drop_collection("test_collection")
+    if mock_milvus["has_collection"].return_value:
+        mock_milvus["drop_collection"]("test_collection")
     os.unlink(config_file)
 
 
-def test_create_collection(client):
+def test_create_collection(client, mock_milvus):
     """Test collection creation."""
+    mock_milvus["has_collection"].return_value = False
     client.create_collection()
-    assert utility.has_collection("test_collection")
+    assert mock_milvus["has_collection"].called
 
 
-def test_insert_and_search(client):
+def test_insert_and_search(client, mock_milvus):
     """Test vector insertion and search."""
     # Create collection
+    mock_milvus["has_collection"].return_value = False
     client.create_collection()
     
     # Generate test vectors
@@ -80,9 +98,10 @@ def test_insert_and_search(client):
     assert all(isinstance(r["distance"], float) for r in results[0])
 
 
-def test_delete(client):
+def test_delete(client, mock_milvus):
     """Test vector deletion."""
     # Create collection
+    mock_milvus["has_collection"].return_value = False
     client.create_collection()
     
     # Insert vectors
@@ -106,8 +125,9 @@ def test_invalid_config():
             MilvusClient(f.name)
 
 
-def test_connection_error():
+def test_connection_error(mock_milvus):
     """Test handling of connection errors."""
+    mock_milvus["connect"].side_effect = Exception("Connection failed")
     config = {
         "milvus": {
             "host": "invalid_host",

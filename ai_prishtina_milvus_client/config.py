@@ -24,6 +24,7 @@ class MilvusConfig(BaseModel):
     index_type: str = Field(default="IVF_FLAT", description="Index type")
     metric_type: str = Field(default="L2", description="Distance metric type")
     nlist: int = Field(default=1024, description="Number of clusters for IVF index")
+    metadata_fields: Optional[list] = Field(default=None, description="List of metadata fields for the collection schema. Each field should be a dict with 'name' and 'type'.")
     
     @classmethod
     def from_yaml(cls, config_path: str) -> "MilvusConfig":

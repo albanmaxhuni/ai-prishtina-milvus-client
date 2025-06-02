@@ -1,86 +1,83 @@
 """
-AI Prishtina Milvus Client
-=========================
-
-A high-level Python library for interacting with Milvus vector database.
-Provides a simplified interface for common operations and handles connection
-management, error handling, and configuration.
-
-Author: Alban Maxhuni, PhD
-Email: alban.q.maxhuni@gmail.com | info@albanmaxhuni.com
-License: MIT
+AI Prishtina Milvus Client - A comprehensive client for Milvus vector database operations.
 """
 
-from ai_prishtina_milvus_client.client import MilvusClient
-from ai_prishtina_milvus_client.config import MilvusConfig
-from ai_prishtina_milvus_client.exceptions import (
-    MilvusClientError,
-    ConfigurationError,
-    ConnectionError,
-    CollectionError,
-    InsertError,
-    SearchError
-)
-from ai_prishtina_milvus_client.data_sources import (
-    DataSource,
-    CSVDataSource,
-    JSONDataSource,
-    NumPyDataSource
-)
-from ai_prishtina_milvus_client.cloud_storage import (
-    CloudStorage,
-    S3Storage,
-    GCSStorage,
-    AzureStorage
-)
-from ai_prishtina_milvus_client.api_integrations import (
-    APIClient,
-    OpenAIClient,
-    HuggingFaceClient,
-    CohereClient
-)
-from ai_prishtina_milvus_client.streaming import StreamingClient
-from ai_prishtina_milvus_client.distributed import DistributedClient
-from ai_prishtina_milvus_client.advanced import AdvancedClient
+from .client import MilvusClient
+from .config import MilvusConfig
+from .data_validation import DataValidator, VectorValidationConfig
+from .batch_operations import BatchProcessor, BatchConfig, BatchMetrics
+from .monitoring import MetricsCollector, MonitoringConfig, PerformanceMetrics, SystemMetrics
+from .error_recovery import ErrorRecovery, RetryConfig, BackupConfig
+from .security import SecurityManager, SecurityConfig, User
+from .advanced_search import AdvancedSearch, SearchConfig, FilterConfig, RankingConfig, FilterCondition
+from .data_management import DataManager, DataValidationConfig, DataCleaningConfig, DataTransformationConfig
+from .performance import PerformanceOptimizer, PerformanceConfig, CacheConfig, BatchConfig
+from .dev_tools import DevTools, LoggingConfig, DebugConfig, TestConfig
+from .advanced import AdvancedMilvusClient, PartitionConfig, HybridQueryConfig
+from .streaming import StreamConfig, StreamMessage, KafkaStreamProcessor
 
 __version__ = "0.1.0"
-__author__ = "Alban Maxhuni, PhD"
-__email__ = "alban.q.maxhuni@gmail.com"
-__license__ = "MIT"
 
 __all__ = [
-    # Core components
+    # Core client
     "MilvusClient",
     "MilvusConfig",
+    "AdvancedMilvusClient",
+    "PartitionConfig",
+    "HybridQueryConfig",
     
-    # Exceptions
-    "MilvusClientError",
-    "ConfigurationError",
-    "ConnectionError",
-    "CollectionError",
-    "InsertError",
-    "SearchError",
+    # Streaming
+    "StreamConfig",
+    "StreamMessage",
+    "KafkaStreamProcessor",
     
-    # Data sources
-    "DataSource",
-    "CSVDataSource",
-    "JSONDataSource",
-    "NumPyDataSource",
+    # Data validation
+    "DataValidator",
+    "VectorValidationConfig",
     
-    # Cloud storage
-    "CloudStorage",
-    "S3Storage",
-    "GCSStorage",
-    "AzureStorage",
+    # Batch operations
+    "BatchProcessor",
+    "BatchConfig",
+    "BatchMetrics",
     
-    # API integrations
-    "APIClient",
-    "OpenAIClient",
-    "HuggingFaceClient",
-    "CohereClient",
+    # Monitoring
+    "MetricsCollector",
+    "MonitoringConfig",
+    "PerformanceMetrics",
+    "SystemMetrics",
     
-    # Advanced features
-    "StreamingClient",
-    "DistributedClient",
-    "AdvancedClient"
+    # Error recovery
+    "ErrorRecovery",
+    "RetryConfig",
+    "BackupConfig",
+    
+    # Security
+    "SecurityManager",
+    "SecurityConfig",
+    "User",
+    
+    # Advanced search
+    "AdvancedSearch",
+    "SearchConfig",
+    "FilterConfig",
+    "RankingConfig",
+    "FilterCondition",
+    
+    # Data management
+    "DataManager",
+    "DataValidationConfig",
+    "DataCleaningConfig",
+    "DataTransformationConfig",
+    
+    # Performance
+    "PerformanceOptimizer",
+    "PerformanceConfig",
+    "CacheConfig",
+    "BatchConfig",
+    
+    # Development tools
+    "DevTools",
+    "LoggingConfig",
+    "DebugConfig",
+    "TestConfig",
 ] 
