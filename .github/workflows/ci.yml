@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.9, 3.10, 3.11]
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libhdf5-dev
+      - name: Install Poetry
+        run: |
+          pip install poetry
+      - name: Install dependencies
+        run: |
+          poetry install --with dev
+      - name: Lint with ruff
+        run: |
+          poetry run ruff .
+      - name: Check formatting with black
+        run: |
+          poetry run black --check .
+      - name: Check import sorting with isort
+        run: |
+          poetry run isort --check-only .
+      - name: Type check with mypy
+        run: |
+          poetry run mypy ai_prishtina_milvus_client
+      - name: Run tests
+        run: |
+          poetry run pytest --maxfail=2 --disable-warnings -v
+      - name: Build docs (optional)
+        run: |
+          if [ -d docs ]; then poetry run mkdocs build; fi
+        continue-on-error: true 
