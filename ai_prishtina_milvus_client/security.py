@@ -1,8 +1,8 @@
 """
-Security features for Milvus operations including authentication, encryption, and access control.
+Security features for Milvus operations including authentication, encryption, and access control with async support.
 """
 
-from typing import Dict, List, Optional, Union, Any
+from typing import Dict, List, Optional, Union, Any, Awaitable
 import os
 import base64
 import hashlib
@@ -12,6 +12,7 @@ import jwt
 from datetime import datetime, timedelta
 from pydantic import BaseModel, Field, SecretStr
 import logging
+import asyncio
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -45,9 +46,9 @@ class SecurityManager:
         self.users: Dict[str, User] = {}
         self.logger = logging.getLogger(__name__)
         
-    def create_user(self, username: str, password: str, roles: List[str]) -> None:
+    async def create_user(self, username: str, password: str, roles: List[str]) -> None:
         """
-        Create a new user.
+        Create a new user asynchronously.
         
         Args:
             username: Username
@@ -57,16 +58,16 @@ class SecurityManager:
         if username in self.users:
             raise ValueError(f"User {username} already exists")
             
-        password_hash = self._hash_password(password)
+        password_hash = await self._hash_password(password)
         self.users[username] = User(
             username=username,
             roles=roles,
             password_hash=password_hash
         )
         
-    def authenticate(self, username: str, password: str) -> str:
+    async def authenticate(self, username: str, password: str) -> str:
         """
-        Authenticate user and return JWT token.
+        Authenticate user and return JWT token asynchronously.
         
         Args:
             username: Username
@@ -79,7 +80,7 @@ class SecurityManager:
             ValueError: If authentication fails
         """
         user = self.users.get(username)
-        if not user or not self._verify_password(password, user.password_hash):
+        if not user or not await self._verify_password(password, user.password_hash):
             raise ValueError("Invalid username or password")
             
         token = jwt.encode(
@@ -94,9 +95,9 @@ class SecurityManager:
         
         return token
         
-    def verify_token(self, token: str) -> User:
+    async def verify_token(self, token: str) -> User:
         """
-        Verify JWT token and return user.
+        Verify JWT token and return user asynchronously.
         
         Args:
             token: JWT token
@@ -123,9 +124,9 @@ class SecurityManager:
         except jwt.InvalidTokenError:
             raise ValueError("Invalid token")
             
-    def check_permission(self, user: User, required_role: str) -> bool:
+    async def check_permission(self, user: User, required_role: str) -> bool:
         """
-        Check if user has required role.
+        Check if user has required role asynchronously.
         
         Args:
             user: User to check
@@ -136,9 +137,9 @@ class SecurityManager:
         """
         return required_role in user.roles
         
-    def encrypt_data(self, data: str) -> bytes:
+    async def encrypt_data(self, data: str) -> bytes:
         """
-        Encrypt data.
+        Encrypt data asynchronously.
         
         Args:
             data: Data to encrypt
@@ -148,11 +149,11 @@ class SecurityManager:
         """
         key = self.config.encryption_key.encode()
         f = Fernet(key)
-        return f.encrypt(data.encode())
+        return await asyncio.to_thread(f.encrypt, data.encode())
         
-    def decrypt_data(self, encrypted_data: bytes) -> str:
+    async def decrypt_data(self, encrypted_data: bytes) -> str:
         """
-        Decrypt data.
+        Decrypt data asynchronously.
         
         Args:
             encrypted_data: Data to decrypt
@@ -162,11 +163,11 @@ class SecurityManager:
         """
         key = self.config.encryption_key.encode()
         f = Fernet(key)
-        return f.decrypt(encrypted_data).decode()
+        return (await asyncio.to_thread(f.decrypt, encrypted_data)).decode()
         
-    def _hash_password(self, password: str) -> str:
+    async def _hash_password(self, password: str) -> str:
         """
-        Hash password.
+        Hash password asynchronously.
         
         Args:
             password: Password to hash
@@ -174,11 +175,15 @@ class SecurityManager:
         Returns:
             Hashed password
         """
-        return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+        return (await asyncio.to_thread(
+            bcrypt.hashpw,
+            password.encode(),
+            bcrypt.gensalt()
+        )).decode()
         
-    def _verify_password(self, password: str, password_hash: str) -> bool:
+    async def _verify_password(self, password: str, password_hash: str) -> bool:
         """
-        Verify password.
+        Verify password asynchronously.
         
         Args:
             password: Password to verify
@@ -187,11 +192,15 @@ class SecurityManager:
         Returns:
             True if password matches, False otherwise
         """
-        return bcrypt.checkpw(password.encode(), password_hash.encode())
+        return await asyncio.to_thread(
+            bcrypt.checkpw,
+            password.encode(),
+            password_hash.encode()
+        )
         
-    def validate_ip(self, ip: str) -> bool:
+    async def validate_ip(self, ip: str) -> bool:
         """
-        Validate IP address against allowed list.
+        Validate IP address against allowed list asynchronously.
         
         Args:
             ip: IP address to validate

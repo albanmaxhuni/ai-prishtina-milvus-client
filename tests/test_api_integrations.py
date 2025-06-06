@@ -1,226 +1,279 @@
-"""Unit tests for API integrations."""
-
-import os
-import tempfile
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+"""Tests for API integrations."""
 
 import pytest
-import requests
+import asyncio
+from typing import List, Dict, Any
+import aiohttp
+from unittest.mock import AsyncMock, patch
 
-from ai_prishtina_milvus_client.api_integrations import (
-    APIConfig,
-    APIClientFactory,
-    load_api_client,
-)
+from ai_prishtina_milvus_client.api_integrations import APIClient, APIConfig, APIIntegration
+from ai_prishtina_milvus_client.config import MilvusConfig
+from ai_prishtina_milvus_client.exceptions import APIError
 
 
 @pytest.fixture
-def openai_config():
-    """Create OpenAI configuration."""
+def api_config() -> APIConfig:
+    """Create API configuration."""
     return APIConfig(
-        service="openai",
-        base_url="https://api.openai.com/v1",
+        base_url="http://test-api.com",
         api_key="test-key",
-        model="text-embedding-ada-002",
-        parameters={
-            "max_tokens": 100,
-            "temperature": 0.7,
-        },
+        timeout=30.0,
+        max_retries=3,
+        retry_delay=1.0,
+        headers={"Content-Type": "application/json"},
+        verify_ssl=True
     )
 
 
 @pytest.fixture
-def huggingface_config():
-    """Create HuggingFace configuration."""
-    return APIConfig(
-        service="huggingface",
-        base_url="https://api-inference.huggingface.co",
-        api_key="test-key",
-        model="sentence-transformers/all-MiniLM-L6-v2",
-        parameters={
-            "max_length": 128,
-            "truncation": True,
-        },
-    )
+async def api_client(api_config: APIConfig):
+    """Create API client."""
+    async with APIClient(api_config) as client:
+        yield client
 
 
 @pytest.fixture
-def cohere_config():
-    """Create Cohere configuration."""
-    return APIConfig(
-        service="cohere",
-        base_url="https://api.cohere.ai/v1",
-        api_key="test-key",
-        model="embed-english-v2.0",
-        parameters={
-            "truncate": "NONE",
-        },
-    )
+async def api_integration(milvus_config: MilvusConfig, api_config: APIConfig):
+    """Create API integration."""
+    integration = APIIntegration(milvus_config, api_config)
+    yield integration
+    await integration.cleanup()
 
 
-@pytest.fixture
-def mock_requests():
-    """Create mock requests session."""
-    with patch("requests.Session") as mock_session:
-        mock_sess = MagicMock()
-        mock_session.return_value = mock_sess
-        yield mock_sess
-
-
-def test_openai_client(mock_requests):
-    """Test OpenAI client."""
-    config = {
-        "service": "openai",
-        "base_url": "https://api.openai.com/v1",
-        "api_key": "test-key",
-        "model": "text-embedding-ada-002"
-    }
+@pytest.mark.asyncio
+async def test_api_client_request(api_client: APIClient):
+    """Test API client request."""
+    # Mock response
+    mock_response = AsyncMock()
+    mock_response.status = 200
+    mock_response.json.return_value = {"data": "test"}
     
-    # Mock embedding response
-    mock_requests.post.return_value.json.return_value = {
-        "data": [
-            {"embedding": [0.1, 0.2, 0.3]},
-            {"embedding": [0.4, 0.5, 0.6]}
-        ]
-    }
+    # Mock session
+    mock_session = AsyncMock()
+    mock_session.request.return_value.__aenter__.return_value = mock_response
     
-    client = APIClientFactory.create(APIConfig(**config))
-    vectors = client.get_vectors(["test1", "test2"])
-    assert len(vectors) == 2
-    assert len(vectors[0]) == 3
-    
-    # Mock metadata response
-    mock_requests.post.return_value.json.return_value = {
-        "choices": [
-            {"text": "category: A\nscore: 0.8"},
-            {"text": "category: B\nscore: 0.9"}
-        ]
-    }
-    
-    metadata = client.get_metadata(["test1", "test2"])
-    assert len(metadata) == 2
-    assert metadata[0]["category"] == "A"
-    assert metadata[0]["score"] == "0.8"
-
-
-def test_missing_api_key():
-    """Test missing API key."""
-    config = {
-        "service": "openai",
-        "base_url": "https://api.openai.com/v1",
-        "model": "text-embedding-ada-002"
-    }
-    
-    with pytest.raises(ValueError, match="API key is required"):
-        APIClientFactory.create(APIConfig(**config))
-
-
-def test_huggingface_client(mock_requests):
-    """Test HuggingFace client."""
-    config = {
-        "service": "huggingface",
-        "base_url": "https://api.huggingface.co",
-        "api_key": "test-key",
-        "model": "sentence-transformers/all-MiniLM-L6-v2"
-    }
-    
-    # Mock embedding response
-    mock_requests.post.return_value.json.return_value = [
-        [0.1, 0.2, 0.3],
-        [0.4, 0.5, 0.6]
-    ]
-    
-    client = APIClientFactory.create(APIConfig(**config))
-    vectors = client.get_vectors(["test1", "test2"])
-    assert len(vectors) == 2
-    assert len(vectors[0]) == 3
-    
-    # Mock metadata response
-    mock_requests.post.return_value.json.return_value = [
-        {"label": "A", "score": 0.8},
-        {"label": "B", "score": 0.9}
-    ]
-    
-    metadata = client.get_metadata(["test1", "test2"])
-    assert len(metadata) == 2
-    assert metadata[0]["category"] == "A"
-    assert metadata[0]["score"] == 0.8
-
-
-def test_cohere_client(mock_requests):
-    """Test Cohere client."""
-    config = {
-        "service": "cohere",
-        "base_url": "https://api.cohere.ai",
-        "api_key": "test-key",
-        "model": "embed-english-v2.0"
-    }
-    
-    # Mock embedding response
-    mock_requests.post.return_value.json.return_value = {
-        "embeddings": [
-            [0.1, 0.2, 0.3],
-            [0.4, 0.5, 0.6]
-        ]
-    }
-    
-    client = APIClientFactory.create(APIConfig(**config))
-    vectors = client.get_vectors(["test1", "test2"])
-    assert len(vectors) == 2
-    assert len(vectors[0]) == 3
-    
-    # Mock metadata response
-    mock_requests.post.return_value.json.return_value = {
-        "classifications": [
-            {"prediction": "A", "confidence": 0.8},
-            {"prediction": "B", "confidence": 0.9}
-        ]
-    }
-    
-    metadata = client.get_metadata(["test1", "test2"])
-    assert len(metadata) == 2
-    assert metadata[0]["category"] == "A"
-    assert metadata[0]["score"] == 0.8
-
-
-def test_invalid_api_type():
-    """Test invalid API type."""
-    config = APIConfig(
-        service="invalid",
-        base_url="https://api.example.com",
-        api_key="test-key",
-    )
-    
-    with pytest.raises(ValueError):
-        APIClientFactory.create(config)
-
-
-def test_load_api_client():
-    """Test loading API configuration."""
-    # Create temporary config file
-    config_data = {
-        "service": "openai",
-        "base_url": "https://api.openai.com/v1",
-        "api_key": "test-key",
-        "model": "text-embedding-ada-002",
-        "parameters": {
-            "max_tokens": 100,
-            "temperature": 0.7,
-        },
-    }
-    
-    with tempfile.NamedTemporaryFile(suffix=".yaml", delete=False) as temp_file:
-        temp_file.write(str(config_data).encode())
-        config_path = temp_file.name
-    
-    # Test loading
-    with patch("requests.Session") as mock_session:
-        mock_sess = MagicMock()
-        mock_session.return_value = mock_sess
+    with patch("aiohttp.ClientSession", return_value=mock_session):
+        # Make request
+        response = await api_client.request(
+            method="GET",
+            endpoint="/test",
+            params={"key": "value"}
+        )
         
-        client = load_api_client(config_path)
-        assert client is not None
+        # Verify request
+        mock_session.request.assert_called_once_with(
+            "GET",
+            "http://test-api.com/test",
+            params={"key": "value"},
+            headers={"Content-Type": "application/json", "Authorization": "Bearer test-key"},
+            timeout=30.0,
+            ssl=True
+        )
+        
+        # Verify response
+        assert response == {"data": "test"}
+
+
+@pytest.mark.asyncio
+async def test_api_client_retry(api_client: APIClient):
+    """Test API client retry on failure."""
+    # Mock response
+    mock_response = AsyncMock()
+    mock_response.status = 500
     
-    # Clean up
-    os.unlink(config_path) 
+    # Mock session
+    mock_session = AsyncMock()
+    mock_session.request.return_value.__aenter__.return_value = mock_response
+    
+    with patch("aiohttp.ClientSession", return_value=mock_session):
+        # Make request
+        with pytest.raises(APIError):
+            await api_client.request(
+                method="GET",
+                endpoint="/test"
+            )
+        
+        # Verify retries
+        assert mock_session.request.call_count == 4  # Initial + 3 retries
+
+
+@pytest.mark.asyncio
+async def test_api_integration_fetch_data(api_integration: APIIntegration):
+    """Test API integration fetch data."""
+    # Mock API response
+    mock_data = [
+        {"id": 1, "vector": [0.1, 0.2, 0.3]},
+        {"id": 2, "vector": [0.4, 0.5, 0.6]}
+    ]
+    
+    # Mock API client
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_data
+    
+    with patch.object(api_integration, "client", mock_client):
+        # Fetch data
+        data = await api_integration.fetch_data("/vectors")
+        
+        # Verify request
+        mock_client.get.assert_called_once_with("/vectors")
+        
+        # Verify response
+        assert data == mock_data
+
+
+@pytest.mark.asyncio
+async def test_api_integration_index_data(
+    api_integration: APIIntegration,
+    test_collection: str
+):
+    """Test API integration index data."""
+    # Mock API response
+    mock_data = [
+        {"id": 1, "vector": [0.1, 0.2, 0.3]},
+        {"id": 2, "vector": [0.4, 0.5, 0.6]}
+    ]
+    
+    # Mock API client
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_data
+    
+    with patch.object(api_integration, "client", mock_client):
+        # Index data
+        result = await api_integration.index_data(
+            collection_name=test_collection,
+            data_endpoint="/vectors"
+        )
+        
+        # Verify request
+        mock_client.get.assert_called_once_with("/vectors")
+        
+        # Verify result
+        assert result["indexed_count"] == 2
+        assert result["failed_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_api_integration_search(
+    api_integration: APIIntegration,
+    test_collection: str,
+    test_vectors: List[List[float]]
+):
+    """Test API integration search."""
+    # Mock API response
+    mock_results = [
+        {"id": 1, "distance": 0.1},
+        {"id": 2, "distance": 0.2}
+    ]
+    
+    # Mock API client
+    mock_client = AsyncMock()
+    mock_client.post.return_value = mock_results
+    
+    with patch.object(api_integration, "client", mock_client):
+        # Search
+        results = await api_integration.search(
+            collection_name=test_collection,
+            vectors=test_vectors[:2],
+            search_endpoint="/search"
+        )
+        
+        # Verify request
+        mock_client.post.assert_called_once_with(
+            "/search",
+            json={"vectors": test_vectors[:2]}
+        )
+        
+        # Verify results
+        assert results == mock_results
+
+
+@pytest.mark.asyncio
+async def test_api_integration_enrich(
+    api_integration: APIIntegration,
+    test_collection: str
+):
+    """Test API integration enrich."""
+    # Mock API response
+    mock_data = [
+        {"id": 1, "metadata": {"key": "value"}},
+        {"id": 2, "metadata": {"key": "value"}}
+    ]
+    
+    # Mock API client
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_data
+    
+    with patch.object(api_integration, "client", mock_client):
+        # Enrich data
+        result = await api_integration.enrich(
+            collection_name=test_collection,
+            enrich_endpoint="/enrich"
+        )
+        
+        # Verify request
+        mock_client.get.assert_called_once_with("/enrich")
+        
+        # Verify result
+        assert result["enriched_count"] == 2
+        assert result["failed_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_api_integration_sync(
+    api_integration: APIIntegration,
+    test_collection: str
+):
+    """Test API integration sync."""
+    # Mock API response
+    mock_data = [
+        {"id": 1, "vector": [0.1, 0.2, 0.3]},
+        {"id": 2, "vector": [0.4, 0.5, 0.6]}
+    ]
+    
+    # Mock API client
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_data
+    
+    with patch.object(api_integration, "client", mock_client):
+        # Sync data
+        result = await api_integration.sync(
+            collection_name=test_collection,
+            sync_endpoint="/sync"
+        )
+        
+        # Verify request
+        mock_client.get.assert_called_once_with("/sync")
+        
+        # Verify result
+        assert result["synced_count"] == 2
+        assert result["failed_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_api_integration_error_handling(api_integration: APIIntegration):
+    """Test API integration error handling."""
+    # Mock API client
+    mock_client = AsyncMock()
+    mock_client.get.side_effect = APIError("API error")
+    
+    with patch.object(api_integration, "client", mock_client):
+        # Test error handling
+        with pytest.raises(APIError):
+            await api_integration.fetch_data("/test")
+
+
+@pytest.mark.asyncio
+async def test_api_integration_context_manager(
+    milvus_config: MilvusConfig,
+    api_config: APIConfig
+):
+    """Test API integration context manager."""
+    async with APIIntegration(milvus_config, api_config) as integration:
+        # Mock API client
+        mock_client = AsyncMock()
+        mock_client.get.return_value = [{"id": 1, "vector": [0.1, 0.2, 0.3]}]
+        
+        with patch.object(integration, "client", mock_client):
+            # Test context manager
+            data = await integration.fetch_data("/test")
+            assert data == [{"id": 1, "vector": [0.1, 0.2, 0.3]}] 

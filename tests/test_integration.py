@@ -10,8 +10,13 @@ import numpy as np
 import pandas as pd
 import pytest
 import yaml
+import asyncio
+from typing import List, Dict, Any
+from unittest.mock import AsyncMock, patch
 
 from ai_prishtina_milvus_client import MilvusConfig, MilvusClient
+from ai_prishtina_milvus_client.client import AsyncMilvusClient
+from ai_prishtina_milvus_client.exceptions import MilvusError
 
 
 def create_temp_csv(vectors, metadata):
@@ -50,6 +55,223 @@ def create_milvus_config(collection_name="integration_test_collection", dim=128,
         nlist=1024,
         metadata_fields=metadata_fields,
     )
+
+
+@pytest.fixture
+async def milvus_client(milvus_config: MilvusConfig):
+    """Create Milvus client."""
+    client = AsyncMilvusClient(milvus_config)
+    yield client
+    await client.cleanup()
+
+
+@pytest.fixture
+def test_collection_data() -> Dict[str, Any]:
+    """Generate test collection data."""
+    return {
+        "vectors": [[0.1, 0.2, 0.3] for _ in range(10)],
+        "metadata": [{"id": i} for i in range(10)]
+    }
+
+
+@pytest.mark.asyncio
+async def test_collection_operations(
+    milvus_client: AsyncMilvusClient,
+    test_collection: str,
+    test_collection_data: Dict[str, Any]
+):
+    """Test collection operations."""
+    # Create collection
+    await milvus_client.create_collection(
+        collection_name=test_collection,
+        dimension=3,
+        index_type="IVF_FLAT",
+        metric_type="L2"
+    )
+    
+    # Insert vectors
+    inserted_ids = await milvus_client.insert_vectors(
+        collection_name=test_collection,
+        vectors=test_collection_data["vectors"],
+        metadata=test_collection_data["metadata"]
+    )
+    
+    assert len(inserted_ids) == len(test_collection_data["vectors"])
+    
+    # Query vectors
+    results = await milvus_client.query(
+        collection_name=test_collection,
+        expr="id in [0, 1, 2]",
+        output_fields=["id"]
+    )
+    
+    assert len(results) == 3
+    
+    # Search vectors
+    search_results = await milvus_client.search(
+        collection_name=test_collection,
+        vectors=test_collection_data["vectors"][:2],
+        limit=5
+    )
+    
+    assert len(search_results) == 2
+    assert len(search_results[0]) == 5
+    
+    # Delete vectors
+    deleted_count = await milvus_client.delete(
+        collection_name=test_collection,
+        expr="id in [0, 1, 2]"
+    )
+    
+    assert deleted_count == 3
+    
+    # Drop collection
+    await milvus_client.drop_collection(test_collection)
+
+
+@pytest.mark.asyncio
+async def test_partition_operations(
+    milvus_client: AsyncMilvusClient,
+    test_collection: str,
+    test_collection_data: Dict[str, Any]
+):
+    """Test partition operations."""
+    # Create collection
+    await milvus_client.create_collection(
+        collection_name=test_collection,
+        dimension=3,
+        index_type="IVF_FLAT",
+        metric_type="L2"
+    )
+    
+    # Create partition
+    partition_name = "test_partition"
+    await milvus_client.create_partition(
+        collection_name=test_collection,
+        partition_name=partition_name
+    )
+    
+    # Insert vectors into partition
+    inserted_ids = await milvus_client.insert_vectors(
+        collection_name=test_collection,
+        vectors=test_collection_data["vectors"],
+        metadata=test_collection_data["metadata"],
+        partition_name=partition_name
+    )
+    
+    assert len(inserted_ids) == len(test_collection_data["vectors"])
+    
+    # Query partition
+    results = await milvus_client.query(
+        collection_name=test_collection,
+        expr="id in [0, 1, 2]",
+        output_fields=["id"],
+        partition_names=[partition_name]
+    )
+    
+    assert len(results) == 3
+    
+    # Drop partition
+    await milvus_client.drop_partition(
+        collection_name=test_collection,
+        partition_name=partition_name
+    )
+    
+    # Drop collection
+    await milvus_client.drop_collection(test_collection)
+
+
+@pytest.mark.asyncio
+async def test_index_operations(
+    milvus_client: AsyncMilvusClient,
+    test_collection: str,
+    test_collection_data: Dict[str, Any]
+):
+    """Test index operations."""
+    # Create collection
+    await milvus_client.create_collection(
+        collection_name=test_collection,
+        dimension=3,
+        index_type="IVF_FLAT",
+        metric_type="L2"
+    )
+    
+    # Insert vectors
+    await milvus_client.insert_vectors(
+        collection_name=test_collection,
+        vectors=test_collection_data["vectors"],
+        metadata=test_collection_data["metadata"]
+    )
+    
+    # Create index
+    await milvus_client.create_index(
+        collection_name=test_collection,
+        field_name="vector",
+        index_type="IVF_FLAT",
+        metric_type="L2",
+        params={"nlist": 1024}
+    )
+    
+    # Describe index
+    index_info = await milvus_client.describe_index(
+        collection_name=test_collection,
+        field_name="vector"
+    )
+    
+    assert index_info["index_type"] == "IVF_FLAT"
+    assert index_info["metric_type"] == "L2"
+    
+    # Drop index
+    await milvus_client.drop_index(
+        collection_name=test_collection,
+        field_name="vector"
+    )
+    
+    # Drop collection
+    await milvus_client.drop_collection(test_collection)
+
+
+@pytest.mark.asyncio
+async def test_error_handling(milvus_client: AsyncMilvusClient):
+    """Test error handling."""
+    # Test invalid collection
+    with pytest.raises(MilvusError):
+        await milvus_client.query(
+            collection_name="invalid_collection",
+            expr="id in [0, 1, 2]"
+        )
+    
+    # Test invalid partition
+    with pytest.raises(MilvusError):
+        await milvus_client.create_partition(
+            collection_name="test_collection",
+            partition_name="invalid_partition"
+        )
+    
+    # Test invalid index
+    with pytest.raises(MilvusError):
+        await milvus_client.create_index(
+            collection_name="test_collection",
+            field_name="invalid_field",
+            index_type="IVF_FLAT",
+            metric_type="L2"
+        )
+
+
+@pytest.mark.asyncio
+async def test_context_manager(milvus_config: MilvusConfig):
+    """Test context manager."""
+    async with AsyncMilvusClient(milvus_config) as client:
+        # Create collection
+        await client.create_collection(
+            collection_name="test_collection",
+            dimension=3,
+            index_type="IVF_FLAT",
+            metric_type="L2"
+        )
+        
+        # Drop collection
+        await client.drop_collection("test_collection")
 
 
 def test_end_to_end_file_ingestion_and_search():

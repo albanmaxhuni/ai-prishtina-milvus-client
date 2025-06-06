@@ -1,8 +1,10 @@
 """
-Cloud storage integration for various providers.
+Cloud storage integration for various providers with async support.
 """
 
 import os
+import asyncio
+import aiofiles
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
@@ -13,8 +15,10 @@ from google.cloud import storage
 from google.oauth2 import service_account
 import azure.storage.blob
 from azure.identity import DefaultAzureCredential
-import requests
+import aiohttp
 from pydantic import BaseModel, Field
+
+from ai_prishtina_milvus_client.exceptions import CloudStorageError
 
 
 class CloudStorageConfig(BaseModel):
@@ -34,156 +38,184 @@ class CloudStorage(ABC):
         self._client = None
         
     @abstractmethod
-    def connect(self) -> None:
-        """Establish connection to cloud storage."""
+    async def connect(self) -> None:
+        """Establish connection to cloud storage asynchronously."""
         pass
         
     @abstractmethod
-    def download_file(self, remote_path: str, local_path: str) -> None:
-        """Download a file from cloud storage."""
+    async def download_file(self, remote_path: str, local_path: str) -> None:
+        """Download a file from cloud storage asynchronously."""
         pass
         
     @abstractmethod
-    def upload_file(self, local_path: str, remote_path: str) -> None:
-        """Upload a file to cloud storage."""
+    async def upload_file(self, local_path: str, remote_path: str) -> None:
+        """Upload a file to cloud storage asynchronously."""
         pass
         
     @abstractmethod
-    def list_files(self, prefix: Optional[str] = None) -> List[str]:
-        """List files in the bucket with optional prefix."""
+    async def list_files(self, prefix: Optional[str] = None) -> List[str]:
+        """List files in the bucket with optional prefix asynchronously."""
         pass
 
 
 class S3Storage(CloudStorage):
     """AWS S3 storage implementation."""
     
-    def connect(self) -> None:
-        """Connect to AWS S3."""
-        if self.config.credentials:
-            self._client = boto3.client(
-                's3',
-                aws_access_key_id=self.config.credentials.get('access_key_id'),
-                aws_secret_access_key=self.config.credentials.get('secret_access_key'),
-                region_name=self.config.region
-            )
-        else:
-            self._client = boto3.client('s3', region_name=self.config.region)
-            
-    def download_file(self, remote_path: str, local_path: str) -> None:
-        """Download file from S3."""
+    async def connect(self) -> None:
+        """Connect to AWS S3 asynchronously."""
         try:
-            self._client.download_file(self.config.bucket, remote_path, local_path)
-        except ClientError as e:
-            raise Exception(f"Failed to download file from S3: {str(e)}")
+            if self.config.credentials:
+                self._client = boto3.client(
+                    's3',
+                    aws_access_key_id=self.config.credentials.get('access_key_id'),
+                    aws_secret_access_key=self.config.credentials.get('secret_access_key'),
+                    region_name=self.config.region
+                )
+            else:
+                self._client = boto3.client('s3', region_name=self.config.region)
+        except Exception as e:
+            raise CloudStorageError(f"Failed to connect to S3: {str(e)}")
             
-    def upload_file(self, local_path: str, remote_path: str) -> None:
-        """Upload file to S3."""
+    async def download_file(self, remote_path: str, local_path: str) -> None:
+        """Download file from S3 asynchronously."""
         try:
-            self._client.upload_file(local_path, self.config.bucket, remote_path)
+            def download():
+                self._client.download_file(self.config.bucket, remote_path, local_path)
+            await asyncio.to_thread(download)
         except ClientError as e:
-            raise Exception(f"Failed to upload file to S3: {str(e)}")
+            raise CloudStorageError(f"Failed to download file from S3: {str(e)}")
             
-    def list_files(self, prefix: Optional[str] = None) -> List[str]:
-        """List files in S3 bucket."""
+    async def upload_file(self, local_path: str, remote_path: str) -> None:
+        """Upload file to S3 asynchronously."""
+        try:
+            def upload():
+                self._client.upload_file(local_path, self.config.bucket, remote_path)
+            await asyncio.to_thread(upload)
+        except ClientError as e:
+            raise CloudStorageError(f"Failed to upload file to S3: {str(e)}")
+            
+    async def list_files(self, prefix: Optional[str] = None) -> List[str]:
+        """List files in S3 bucket asynchronously."""
         try:
             prefix = prefix or self.config.prefix
-            response = self._client.list_objects_v2(
-                Bucket=self.config.bucket,
-                Prefix=prefix
-            )
-            return [obj['Key'] for obj in response.get('Contents', [])]
+            def list_objects():
+                response = self._client.list_objects_v2(
+                    Bucket=self.config.bucket,
+                    Prefix=prefix
+                )
+                return [obj['Key'] for obj in response.get('Contents', [])]
+            return await asyncio.to_thread(list_objects)
         except ClientError as e:
-            raise Exception(f"Failed to list files in S3: {str(e)}")
+            raise CloudStorageError(f"Failed to list files in S3: {str(e)}")
 
 
 class GCPStorage(CloudStorage):
     """Google Cloud Storage implementation."""
     
-    def connect(self) -> None:
-        """Connect to Google Cloud Storage."""
-        if self.config.credentials:
-            credentials = service_account.Credentials.from_service_account_info(
-                self.config.credentials
-            )
-            self._client = storage.Client(credentials=credentials)
-        else:
-            self._client = storage.Client()
-            
-    def download_file(self, remote_path: str, local_path: str) -> None:
-        """Download file from GCS."""
+    async def connect(self) -> None:
+        """Connect to Google Cloud Storage asynchronously."""
         try:
-            bucket = self._client.bucket(self.config.bucket)
-            blob = bucket.blob(remote_path)
-            blob.download_to_filename(local_path)
+            if self.config.credentials:
+                credentials = service_account.Credentials.from_service_account_info(
+                    self.config.credentials
+                )
+                self._client = storage.Client(credentials=credentials)
+            else:
+                self._client = storage.Client()
         except Exception as e:
-            raise Exception(f"Failed to download file from GCS: {str(e)}")
+            raise CloudStorageError(f"Failed to connect to GCS: {str(e)}")
             
-    def upload_file(self, local_path: str, remote_path: str) -> None:
-        """Upload file to GCS."""
+    async def download_file(self, remote_path: str, local_path: str) -> None:
+        """Download file from GCS asynchronously."""
         try:
-            bucket = self._client.bucket(self.config.bucket)
-            blob = bucket.blob(remote_path)
-            blob.upload_from_filename(local_path)
+            def download():
+                bucket = self._client.bucket(self.config.bucket)
+                blob = bucket.blob(remote_path)
+                blob.download_to_filename(local_path)
+            await asyncio.to_thread(download)
         except Exception as e:
-            raise Exception(f"Failed to upload file to GCS: {str(e)}")
+            raise CloudStorageError(f"Failed to download file from GCS: {str(e)}")
             
-    def list_files(self, prefix: Optional[str] = None) -> List[str]:
-        """List files in GCS bucket."""
+    async def upload_file(self, local_path: str, remote_path: str) -> None:
+        """Upload file to GCS asynchronously."""
+        try:
+            def upload():
+                bucket = self._client.bucket(self.config.bucket)
+                blob = bucket.blob(remote_path)
+                blob.upload_from_filename(local_path)
+            await asyncio.to_thread(upload)
+        except Exception as e:
+            raise CloudStorageError(f"Failed to upload file to GCS: {str(e)}")
+            
+    async def list_files(self, prefix: Optional[str] = None) -> List[str]:
+        """List files in GCS bucket asynchronously."""
         try:
             prefix = prefix or self.config.prefix
-            bucket = self._client.bucket(self.config.bucket)
-            blobs = bucket.list_blobs(prefix=prefix)
-            return [blob.name for blob in blobs]
+            def list_blobs():
+                bucket = self._client.bucket(self.config.bucket)
+                blobs = bucket.list_blobs(prefix=prefix)
+                return [blob.name for blob in blobs]
+            return await asyncio.to_thread(list_blobs)
         except Exception as e:
-            raise Exception(f"Failed to list files in GCS: {str(e)}")
+            raise CloudStorageError(f"Failed to list files in GCS: {str(e)}")
 
 
 class AzureStorage(CloudStorage):
     """Azure Blob Storage implementation."""
     
-    def connect(self) -> None:
-        """Connect to Azure Blob Storage."""
-        if self.config.credentials:
-            self._client = azure.storage.blob.BlobServiceClient(
-                account_url=f"https://{self.config.credentials['account_name']}.blob.core.windows.net",
-                credential=self.config.credentials['account_key']
-            )
-        else:
-            credential = DefaultAzureCredential()
-            self._client = azure.storage.blob.BlobServiceClient(
-                account_url=f"https://{os.environ['AZURE_STORAGE_ACCOUNT']}.blob.core.windows.net",
-                credential=credential
-            )
-            
-    def download_file(self, remote_path: str, local_path: str) -> None:
-        """Download file from Azure Blob Storage."""
+    async def connect(self) -> None:
+        """Connect to Azure Blob Storage asynchronously."""
         try:
-            container_client = self._client.get_container_client(self.config.bucket)
-            blob_client = container_client.get_blob_client(remote_path)
-            with open(local_path, "wb") as f:
-                blob_client.download_blob().readinto(f)
+            if self.config.credentials:
+                self._client = azure.storage.blob.BlobServiceClient(
+                    account_url=f"https://{self.config.credentials['account_name']}.blob.core.windows.net",
+                    credential=self.config.credentials['account_key']
+                )
+            else:
+                credential = DefaultAzureCredential()
+                self._client = azure.storage.blob.BlobServiceClient(
+                    account_url=f"https://{os.environ['AZURE_STORAGE_ACCOUNT']}.blob.core.windows.net",
+                    credential=credential
+                )
         except Exception as e:
-            raise Exception(f"Failed to download file from Azure: {str(e)}")
+            raise CloudStorageError(f"Failed to connect to Azure: {str(e)}")
             
-    def upload_file(self, local_path: str, remote_path: str) -> None:
-        """Upload file to Azure Blob Storage."""
+    async def download_file(self, remote_path: str, local_path: str) -> None:
+        """Download file from Azure Blob Storage asynchronously."""
         try:
-            container_client = self._client.get_container_client(self.config.bucket)
-            blob_client = container_client.get_blob_client(remote_path)
-            with open(local_path, "rb") as f:
-                blob_client.upload_blob(f.read(), overwrite=True)
+            async def download():
+                container_client = self._client.get_container_client(self.config.bucket)
+                blob_client = container_client.get_blob_client(remote_path)
+                async with aiofiles.open(local_path, "wb") as f:
+                    await f.write(await blob_client.download_blob().readall())
+            await download()
         except Exception as e:
-            raise Exception(f"Failed to upload file to Azure: {str(e)}")
+            raise CloudStorageError(f"Failed to download file from Azure: {str(e)}")
             
-    def list_files(self, prefix: Optional[str] = None) -> List[str]:
-        """List files in Azure Blob Storage."""
+    async def upload_file(self, local_path: str, remote_path: str) -> None:
+        """Upload file to Azure Blob Storage asynchronously."""
+        try:
+            async def upload():
+                container_client = self._client.get_container_client(self.config.bucket)
+                blob_client = container_client.get_blob_client(remote_path)
+                async with aiofiles.open(local_path, "rb") as f:
+                    content = await f.read()
+                    await blob_client.upload_blob(content, overwrite=True)
+            await upload()
+        except Exception as e:
+            raise CloudStorageError(f"Failed to upload file to Azure: {str(e)}")
+            
+    async def list_files(self, prefix: Optional[str] = None) -> List[str]:
+        """List files in Azure Blob Storage asynchronously."""
         try:
             prefix = prefix or self.config.prefix
-            container_client = self._client.get_container_client(self.config.bucket)
-            blobs = container_client.list_blobs(name_starts_with=prefix)
-            return [blob.name for blob in blobs]
+            def list_blobs():
+                container_client = self._client.get_container_client(self.config.bucket)
+                blobs = container_client.list_blobs(name_starts_with=prefix)
+                return [blob.name for blob in blobs]
+            return await asyncio.to_thread(list_blobs)
         except Exception as e:
-            raise Exception(f"Failed to list files in Azure: {str(e)}")
+            raise CloudStorageError(f"Failed to list files in Azure: {str(e)}")
 
 
 class CloudStorageFactory:
@@ -215,18 +247,24 @@ class CloudStorageFactory:
         return provider_class(config)
 
 
-def load_cloud_storage(config_path: str) -> CloudStorage:
+async def load_cloud_storage(config_path: str) -> CloudStorage:
     """
-    Load cloud storage from configuration file.
+    Load cloud storage from configuration file asynchronously.
     
     Args:
         config_path: Path to the cloud storage configuration file
         
     Returns:
         CloudStorage instance
+        
+    Raises:
+        CloudStorageError: If loading the cloud storage fails
     """
-    import json
-    with open(config_path) as f:
-        config_data = json.load(f)
-    config = CloudStorageConfig(**config_data)
-    return CloudStorageFactory.create(config) 
+    try:
+        async with aiofiles.open(config_path) as f:
+            content = await f.read()
+            config_data = json.loads(content)
+        config = CloudStorageConfig(**config_data)
+        return CloudStorageFactory.create(config)
+    except Exception as e:
+        raise CloudStorageError(f"Failed to load cloud storage: {str(e)}") 

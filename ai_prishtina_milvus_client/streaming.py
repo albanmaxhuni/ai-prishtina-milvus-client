@@ -1,18 +1,15 @@
 """
-Streaming support for real-time vector ingestion and search.
+Streaming support for real-time vector ingestion and search with async support.
 """
 
 import json
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, Awaitable
 from dataclasses import dataclass
-from concurrent.futures import ThreadPoolExecutor
-import threading
-from queue import Queue
-
-from confluent_kafka import Consumer, Producer, KafkaError
+import asyncio
+from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from pydantic import BaseModel, Field
 
-from .client import MilvusClient
+from .client import AsyncMilvusClient
 from .config import MilvusConfig
 
 
@@ -27,7 +24,7 @@ class StreamConfig(BaseModel):
     session_timeout_ms: int = Field(10000, description="Session timeout in ms")
     max_poll_records: int = Field(500, description="Max poll records")
     batch_size: int = Field(1000, description="Batch size for vector insertion")
-    num_workers: int = Field(4, description="Number of worker threads")
+    num_workers: int = Field(4, description="Number of worker tasks")
 
 
 @dataclass
@@ -46,86 +43,105 @@ class KafkaStreamProcessor:
         self,
         milvus_config: MilvusConfig,
         stream_config: StreamConfig,
-        client: Optional[MilvusClient] = None
+        client: Optional[AsyncMilvusClient] = None
     ):
         self.milvus_config = milvus_config
         self.stream_config = stream_config
-        self.client = client or MilvusClient(milvus_config)
-        self.consumer = Consumer({
-            "bootstrap.servers": stream_config.bootstrap_servers,
-            "group.id": stream_config.group_id,
-            "auto.offset.reset": stream_config.auto_offset_reset,
-            "enable.auto.commit": stream_config.enable_auto_commit,
-            "max.poll.interval.ms": stream_config.max_poll_interval_ms,
-            "session.timeout.ms": stream_config.session_timeout_ms,
-            "max.poll.records": stream_config.max_poll_records
-        })
-        self.producer = Producer({
-            "bootstrap.servers": stream_config.bootstrap_servers
-        })
-        self.consumer.subscribe(stream_config.topics)
-        self.batch_queue = Queue()
-        self.stop_event = threading.Event()
+        self.client = client or AsyncMilvusClient(milvus_config)
+        self.consumer = None
+        self.producer = None
+        self.batch_queue = asyncio.Queue()
+        self.stop_event = asyncio.Event()
         self.workers = []
         
-    def start(self):
-        """Start processing messages."""
-        # Start worker threads
+    async def initialize(self):
+        """Initialize Kafka consumer and producer asynchronously."""
+        self.consumer = AIOKafkaConsumer(
+            *self.stream_config.topics,
+            bootstrap_servers=self.stream_config.bootstrap_servers,
+            group_id=self.stream_config.group_id,
+            auto_offset_reset=self.stream_config.auto_offset_reset,
+            enable_auto_commit=self.stream_config.enable_auto_commit,
+            max_poll_interval_ms=self.stream_config.max_poll_interval_ms,
+            session_timeout_ms=self.stream_config.session_timeout_ms,
+            max_poll_records=self.stream_config.max_poll_records
+        )
+        
+        self.producer = AIOKafkaProducer(
+            bootstrap_servers=self.stream_config.bootstrap_servers
+        )
+        
+        await self.consumer.start()
+        await self.producer.start()
+        
+    async def start(self):
+        """Start processing messages asynchronously."""
+        if not self.consumer or not self.producer:
+            await self.initialize()
+            
+        # Start worker tasks
         for _ in range(self.stream_config.num_workers):
-            worker = threading.Thread(target=self._process_batches)
-            worker.daemon = True
-            worker.start()
+            worker = asyncio.create_task(self._process_batches())
             self.workers.append(worker)
             
         # Start consuming messages
         try:
             while not self.stop_event.is_set():
-                msg = self.consumer.poll(1.0)
+                msg = await self.consumer.getone()
                 if msg is None:
                     continue
-                if msg.error():
-                    if msg.error().code() == KafkaError._PARTITION_EOF:
-                        continue
-                    raise Exception(f"Consumer error: {msg.error()}")
                     
                 # Parse message
                 try:
-                    data = json.loads(msg.value().decode("utf-8"))
+                    data = json.loads(msg.value.decode("utf-8"))
                     message = StreamMessage(**data)
-                    self.batch_queue.put(message)
+                    await self.batch_queue.put(message)
                 except Exception as e:
                     print(f"Error processing message: {e}")
                     continue
                     
-        except KeyboardInterrupt:
-            self.stop()
+        except asyncio.CancelledError:
+            await self.stop()
             
-    def stop(self):
-        """Stop processing messages."""
+    async def stop(self):
+        """Stop processing messages asynchronously."""
         self.stop_event.set()
-        for worker in self.workers:
-            worker.join()
-        self.consumer.close()
-        self.client.close()
         
-    def _process_batches(self):
-        """Process batches of messages."""
+        # Cancel worker tasks
+        for worker in self.workers:
+            worker.cancel()
+            
+        # Wait for workers to complete
+        await asyncio.gather(*self.workers, return_exceptions=True)
+        
+        # Close Kafka connections
+        if self.consumer:
+            await self.consumer.stop()
+        if self.producer:
+            await self.producer.stop()
+        await self.client.close()
+        
+    async def _process_batches(self):
+        """Process batches of messages asynchronously."""
         batch = []
         while not self.stop_event.is_set():
             try:
-                message = self.batch_queue.get(timeout=1.0)
+                message = await asyncio.wait_for(
+                    self.batch_queue.get(),
+                    timeout=1.0
+                )
                 batch.append(message)
                 
                 if len(batch) >= self.stream_config.batch_size:
-                    self._insert_batch(batch)
+                    await self._insert_batch(batch)
                     batch = []
-            except Queue.Empty:
+            except asyncio.TimeoutError:
                 if batch:
-                    self._insert_batch(batch)
+                    await self._insert_batch(batch)
                     batch = []
                     
-    def _insert_batch(self, batch: List[StreamMessage]):
-        """Insert a batch of messages."""
+    async def _insert_batch(self, batch: List[StreamMessage]):
+        """Insert a batch of messages asynchronously."""
         try:
             vectors = []
             metadata = []
@@ -135,24 +151,22 @@ class KafkaStreamProcessor:
                     metadata.extend(msg.metadata)
                     
             if vectors:
-                self.client.insert(vectors, metadata)
+                await self.client.insert(vectors, metadata)
         except Exception as e:
             print(f"Error inserting batch: {e}")
             
-    def produce_message(self, topic: str, message: StreamMessage):
-        """Produce a message to Kafka."""
+    async def produce_message(self, topic: str, message: StreamMessage):
+        """Produce a message to Kafka asynchronously."""
         try:
-            self.producer.produce(
+            await self.producer.send_and_wait(
                 topic,
-                json.dumps(message.__dict__).encode("utf-8"),
-                callback=self._delivery_report
+                json.dumps(message.__dict__).encode("utf-8")
             )
-            self.producer.poll(0)
         except Exception as e:
             print(f"Error producing message: {e}")
             
-    def _delivery_report(self, err, msg):
-        """Delivery report callback."""
+    async def _delivery_report(self, err, msg):
+        """Delivery report callback asynchronously."""
         if err is not None:
             print(f"Message delivery failed: {err}")
         else:

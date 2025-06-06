@@ -1,192 +1,196 @@
 """
-Data validation and preprocessing utilities for Milvus operations.
+Data validation utilities for Milvus with async support.
 """
 
-from typing import List, Optional, Union, Dict, Any
-import numpy as np
+import re
+from typing import Any, Dict, List, Optional, Union, Awaitable, Callable, Tuple
+import asyncio
 from pydantic import BaseModel, Field, validator
-from sklearn.preprocessing import normalize
+
+from .exceptions import ValidationError
+
+
+class ValidationConfig(BaseModel):
+    """Configuration for data validation."""
+    required_fields: List[str] = Field(default_factory=list, description="Required fields")
+    field_types: Dict[str, str] = Field(default_factory=dict, description="Field type mapping")
+    value_ranges: Dict[str, Tuple[float, float]] = Field(default_factory=dict, description="Value ranges")
+    patterns: Dict[str, str] = Field(default_factory=dict, description="Regex patterns")
+    custom_validators: Dict[str, Callable] = Field(default_factory=dict, description="Custom validators")
+    validate_vectors: bool = Field(True, description="Validate vector fields")
+    vector_dimensions: Optional[int] = Field(None, description="Expected vector dimensions")
+    validate_metadata: bool = Field(True, description="Validate metadata fields")
+    metadata_schema: Optional[Dict[str, str]] = Field(None, description="Metadata schema")
+
 
 class VectorValidationConfig(BaseModel):
     """Configuration for vector validation."""
-    expected_dim: int = Field(..., description="Expected vector dimension")
+    expected_dim: int = Field(..., description="Expected dimension of vectors")
     normalize: bool = Field(False, description="Whether to normalize vectors")
     check_type: bool = Field(True, description="Whether to check vector type")
-    min_value: Optional[float] = Field(None, description="Minimum allowed value")
-    max_value: Optional[float] = Field(None, description="Maximum allowed value")
+
 
 class DataValidator:
-    """Utility class for validating and preprocessing data."""
+    """Data validation utilities for Milvus."""
     
-    @staticmethod
-    def validate_vectors(
-        vectors: List[List[float]],
-        config: VectorValidationConfig
-    ) -> List[List[float]]:
-        """
-        Validate and optionally normalize vectors.
+    def __init__(self, config: Optional[ValidationConfig] = None):
+        self.config = config or ValidationConfig()
         
-        Args:
-            vectors: List of vectors to validate
-            config: Validation configuration
+    async def validate_data(self, data: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[str]]:
+        """Validate data according to configuration asynchronously."""
+        try:
+            valid_records = []
+            errors = []
             
-        Returns:
-            Validated and optionally normalized vectors
-            
-        Raises:
-            ValueError: If validation fails
-        """
-        if not vectors:
-            raise ValueError("Empty vector list provided")
-            
-        # Convert to numpy array for efficient processing
-        vectors_array = np.array(vectors)
-        
-        # Check dimensions
-        if vectors_array.shape[1] != config.expected_dim:
-            raise ValueError(
-                f"Vector dimension mismatch. Expected {config.expected_dim}, "
-                f"got {vectors_array.shape[1]}"
-            )
-            
-        # Check type
-        if config.check_type and not np.issubdtype(vectors_array.dtype, np.number):
-            raise ValueError(f"Vectors must be numeric, got {vectors_array.dtype}")
-            
-        # Check value ranges
-        if config.min_value is not None:
-            if np.any(vectors_array < config.min_value):
-                raise ValueError(f"Values below minimum {config.min_value} found")
-                
-        if config.max_value is not None:
-            if np.any(vectors_array > config.max_value):
-                raise ValueError(f"Values above maximum {config.max_value} found")
-                
-        # Normalize if requested
-        if config.normalize:
-            vectors_array = normalize(vectors_array)
-            
-        return vectors_array.tolist()
-        
-    @staticmethod
-    def validate_metadata(
-        metadata: List[Dict[str, Any]],
-        required_fields: Optional[List[str]] = None,
-        field_types: Optional[Dict[str, type]] = None
-    ) -> List[Dict[str, Any]]:
-        """
-        Validate metadata entries.
-        
-        Args:
-            metadata: List of metadata dictionaries
-            required_fields: List of required field names
-            field_types: Dictionary mapping field names to expected types
-            
-        Returns:
-            Validated metadata
-            
-        Raises:
-            ValueError: If validation fails
-        """
-        if not metadata:
-            raise ValueError("Empty metadata list provided")
-            
-        # Check required fields
-        if required_fields:
-            for i, entry in enumerate(metadata):
-                missing = [field for field in required_fields if field not in entry]
-                if missing:
-                    raise ValueError(
-                        f"Missing required fields {missing} in metadata entry {i}"
-                    )
+            for i, record in enumerate(data):
+                try:
+                    await self._validate_record(record)
+                    valid_records.append(record)
+                except ValidationError as e:
+                    errors.append(f"Record {i}: {str(e)}")
                     
+            return valid_records, errors
+            
+        except Exception as e:
+            raise ValidationError(f"Data validation failed: {str(e)}")
+            
+    async def _validate_record(self, record: Dict[str, Any]) -> None:
+        """Validate a single record asynchronously."""
+        # Check required fields
+        for field in self.config.required_fields:
+            if field not in record:
+                raise ValidationError(f"Missing required field: {field}")
+                
         # Check field types
-        if field_types:
-            for i, entry in enumerate(metadata):
-                for field, expected_type in field_types.items():
-                    if field in entry and not isinstance(entry[field], expected_type):
-                        raise ValueError(
-                            f"Invalid type for field {field} in metadata entry {i}. "
-                            f"Expected {expected_type}, got {type(entry[field])}"
+        for field, expected_type in self.config.field_types.items():
+            if field in record:
+                if not isinstance(record[field], eval(expected_type)):
+                    raise ValidationError(f"Invalid type for field {field}: expected {expected_type}")
+                    
+        # Check value ranges
+        for field, (min_value, max_value) in self.config.value_ranges.items():
+            if field in record:
+                if record[field] < min_value:
+                    raise ValidationError(f"Value for field {field} below minimum: {min_value}")
+                if record[field] > max_value:
+                    raise ValidationError(f"Value for field {field} above maximum: {max_value}")
+                    
+        # Check patterns
+        for field, pattern in self.config.patterns.items():
+            if field in record and not re.match(pattern, str(record[field])):
+                raise ValidationError(f"Value for field {field} does not match pattern: {pattern}")
+                
+        # Run custom validators
+        for field, validator_func in self.config.custom_validators.items():
+            if field in record:
+                if asyncio.iscoroutinefunction(validator_func):
+                    if not await validator_func(record[field]):
+                        raise ValidationError(f"Custom validation failed for field {field}")
+                else:
+                    if not validator_func(record[field]):
+                        raise ValidationError(f"Custom validation failed for field {field}")
+                        
+        # Validate vectors if enabled
+        if self.config.validate_vectors:
+            await self._validate_vectors(record)
+            
+        # Validate metadata if enabled
+        if self.config.validate_metadata:
+            await self._validate_metadata(record)
+            
+    async def _validate_vectors(self, record: Dict[str, Any]) -> None:
+        """Validate vector fields asynchronously."""
+        for field, value in record.items():
+            if isinstance(value, (list, tuple)) and all(isinstance(x, (int, float)) for x in value):
+                # Check vector dimensions
+                if self.config.vector_dimensions is not None:
+                    if len(value) != self.config.vector_dimensions:
+                        raise ValidationError(
+                            f"Vector field {field} has incorrect dimensions: "
+                            f"expected {self.config.vector_dimensions}, got {len(value)}"
                         )
                         
-        return metadata
-        
-    @staticmethod
-    def preprocess_text(
-        text: str,
-        lowercase: bool = True,
-        remove_punctuation: bool = True,
-        remove_numbers: bool = False,
-        remove_whitespace: bool = True
-    ) -> str:
-        """
-        Preprocess text data.
-        
-        Args:
-            text: Input text
-            lowercase: Whether to convert to lowercase
-            remove_punctuation: Whether to remove punctuation
-            remove_numbers: Whether to remove numbers
-            remove_whitespace: Whether to remove extra whitespace
+                # Check for NaN or infinite values
+                if any(not (x == x) or abs(x) == float('inf') for x in value):
+                    raise ValidationError(f"Vector field {field} contains NaN or infinite values")
+                    
+    async def _validate_metadata(self, record: Dict[str, Any]) -> None:
+        """Validate metadata fields asynchronously."""
+        if "metadata" in record:
+            metadata = record["metadata"]
+            if not isinstance(metadata, dict):
+                raise ValidationError("Metadata must be a dictionary")
+                
+            if self.config.metadata_schema:
+                for field, expected_type in self.config.metadata_schema.items():
+                    if field in metadata:
+                        if not isinstance(metadata[field], eval(expected_type)):
+                            raise ValidationError(
+                                f"Invalid type for metadata field {field}: "
+                                f"expected {expected_type}"
+                            )
+                            
+    async def validate_schema(self, schema: Dict[str, Any]) -> None:
+        """Validate collection schema asynchronously."""
+        try:
+            # Check required fields
+            if "fields" not in schema:
+                raise ValidationError("Schema must contain 'fields'")
+                
+            # Validate each field
+            for field in schema["fields"]:
+                await self._validate_field_schema(field)
+                
+        except Exception as e:
+            raise ValidationError(f"Schema validation failed: {str(e)}")
             
-        Returns:
-            Preprocessed text
-        """
-        import re
-        
-        if lowercase:
-            text = text.lower()
+    async def _validate_field_schema(self, field: Dict[str, Any]) -> None:
+        """Validate a single field schema asynchronously."""
+        # Check required field properties
+        required_props = ["name", "dtype"]
+        for prop in required_props:
+            if prop not in field:
+                raise ValidationError(f"Field schema missing required property: {prop}")
+                
+        # Validate field type
+        valid_types = [
+            "INT64", "VARCHAR", "FLOAT_VECTOR", "BINARY_VECTOR",
+            "BOOL", "INT8", "INT16", "INT32", "FLOAT", "DOUBLE"
+        ]
+        if field["dtype"] not in valid_types:
+            raise ValidationError(f"Invalid field type: {field['dtype']}")
             
-        if remove_punctuation:
-            text = re.sub(r'[^\w\s]', '', text)
-            
-        if remove_numbers:
-            text = re.sub(r'\d+', '', text)
-            
-        if remove_whitespace:
-            text = ' '.join(text.split())
-            
-        return text
-        
-    @staticmethod
-    def preprocess_image(
-        image: np.ndarray,
-        target_size: Optional[tuple] = None,
-        normalize: bool = True,
-        convert_to_rgb: bool = True
-    ) -> np.ndarray:
-        """
-        Preprocess image data.
-        
-        Args:
-            image: Input image as numpy array
-            target_size: Target size (height, width)
-            normalize: Whether to normalize pixel values
-            convert_to_rgb: Whether to convert to RGB
-            
-        Returns:
-            Preprocessed image
-        """
-        from PIL import Image
-        
-        # Convert to PIL Image
-        if not isinstance(image, Image.Image):
-            image = Image.fromarray(image)
-            
-        # Convert to RGB if needed
-        if convert_to_rgb and image.mode != 'RGB':
-            image = image.convert('RGB')
-            
-        # Resize if needed
-        if target_size:
-            image = image.resize(target_size, Image.Resampling.LANCZOS)
-            
-        # Convert back to numpy array
-        image_array = np.array(image)
-        
-        # Normalize if needed
-        if normalize:
-            image_array = image_array.astype(np.float32) / 255.0
-            
-        return image_array 
+        # Validate vector dimensions
+        if field["dtype"] in ["FLOAT_VECTOR", "BINARY_VECTOR"]:
+            if "dim" not in field:
+                raise ValidationError(f"Vector field {field['name']} missing dimension")
+            if not isinstance(field["dim"], int) or field["dim"] <= 0:
+                raise ValidationError(f"Invalid dimension for vector field {field['name']}")
+                
+    async def validate_query(self, query: Dict[str, Any]) -> None:
+        """Validate search query asynchronously."""
+        try:
+            # Check required fields
+            if "vector" not in query:
+                raise ValidationError("Query must contain 'vector'")
+                
+            # Validate vector
+            vector = query["vector"]
+            if not isinstance(vector, (list, tuple)):
+                raise ValidationError("Query vector must be a list or tuple")
+                
+            if not all(isinstance(x, (int, float)) for x in vector):
+                raise ValidationError("Query vector must contain only numbers")
+                
+            # Validate optional fields
+            if "top_k" in query:
+                if not isinstance(query["top_k"], int) or query["top_k"] <= 0:
+                    raise ValidationError("top_k must be a positive integer")
+                    
+            if "metric_type" in query:
+                valid_metrics = ["L2", "IP", "COSINE"]
+                if query["metric_type"] not in valid_metrics:
+                    raise ValidationError(f"Invalid metric_type: {query['metric_type']}")
+                    
+        except Exception as e:
+            raise ValidationError(f"Query validation failed: {str(e)}") 
