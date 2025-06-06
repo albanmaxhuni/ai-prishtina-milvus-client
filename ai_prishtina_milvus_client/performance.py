@@ -1,19 +1,18 @@
 """
-Performance optimization features for Milvus operations including caching, batching, and parallel processing.
+Performance optimization features for Milvus operations including caching, batching, and parallel processing with async support.
 """
 
-from typing import List, Dict, Any, Optional, Union, Tuple, Callable, TypeVar
+from typing import List, Dict, Any, Optional, Union, Tuple, Callable, TypeVar, Awaitable
 import numpy as np
 from pydantic import BaseModel, Field
 import logging
 from datetime import datetime, timedelta
-import threading
-import queue
+import asyncio
 import time
 from functools import lru_cache
 import hashlib
 import json
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 
 T = TypeVar('T')
 
@@ -35,8 +34,8 @@ class BatchConfig(BaseModel):
 
 class PerformanceConfig(BaseModel):
     """Configuration for performance optimization."""
-    use_threading: bool = Field(True, description="Whether to use threading")
-    use_multiprocessing: bool = Field(False, description="Whether to use multiprocessing")
+    use_asyncio: bool = Field(True, description="Whether to use asyncio")
+    use_threading: bool = Field(False, description="Whether to use threading")
     max_workers: int = Field(4, description="Maximum number of workers")
     cache_config: CacheConfig = Field(default_factory=CacheConfig)
     batch_config: BatchConfig = Field(default_factory=BatchConfig)
@@ -78,9 +77,24 @@ class PerformanceOptimizer:
         self.config = config
         self.logger = logging.getLogger(__name__)
         self.cache: Dict[str, CacheEntry] = {}
-        self.cache_lock = threading.Lock()
+        self.cache_lock = asyncio.Lock()
+        self._cleanup_task: Optional[asyncio.Task] = None
         
-    def cached(self, func: Callable[..., T]) -> Callable[..., T]:
+    async def start(self):
+        """Start the performance optimizer."""
+        if self.config.cache_config.enabled:
+            self._cleanup_task = asyncio.create_task(self._cleanup_cache())
+            
+    async def stop(self):
+        """Stop the performance optimizer."""
+        if self._cleanup_task:
+            self._cleanup_task.cancel()
+            try:
+                await self._cleanup_task
+            except asyncio.CancelledError:
+                pass
+                
+    def cached(self, func: Callable[..., Union[T, Awaitable[T]]]) -> Callable[..., Awaitable[T]]:
         """
         Decorator to cache function results.
         
@@ -93,12 +107,12 @@ class PerformanceOptimizer:
         if not self.config.cache_config.enabled:
             return func
             
-        def wrapper(*args, **kwargs) -> T:
+        async def wrapper(*args, **kwargs) -> T:
             # Generate cache key
             key = self._generate_cache_key(func, args, kwargs)
             
             # Check cache
-            with self.cache_lock:
+            async with self.cache_lock:
                 if key in self.cache:
                     entry = self.cache[key]
                     if not entry.is_expired():
@@ -107,11 +121,13 @@ class PerformanceOptimizer:
                     
             # Call function
             result = func(*args, **kwargs)
+            if asyncio.iscoroutine(result):
+                result = await result
             
             # Cache result
-            with self.cache_lock:
+            async with self.cache_lock:
                 if len(self.cache) >= self.config.cache_config.max_size:
-                    self._evict_cache()
+                    await self._evict_cache()
                 self.cache[key] = CacheEntry(
                     result,
                     self.config.cache_config.ttl
@@ -141,7 +157,7 @@ class PerformanceOptimizer:
         key = f"{func.__name__}:{args_str}:{kwargs_str}"
         return hashlib.md5(key.encode()).hexdigest()
         
-    def _evict_cache(self) -> None:
+    async def _evict_cache(self) -> None:
         """Evict expired entries from cache."""
         now = datetime.now()
         expired_keys = [
@@ -161,14 +177,21 @@ class PerformanceOptimizer:
             for key, _ in sorted_entries[:len(self.cache) // 2]:
                 del self.cache[key]
                 
-    def batch_process(
+    async def _cleanup_cache(self) -> None:
+        """Periodically clean up expired cache entries."""
+        while True:
+            await asyncio.sleep(self.config.cache_config.cleanup_interval)
+            async with self.cache_lock:
+                await self._evict_cache()
+                
+    async def batch_process(
         self,
         items: List[Any],
-        func: Callable[[Any], T],
+        func: Callable[[Any], Union[T, Awaitable[T]]],
         chunk_size: Optional[int] = None
     ) -> List[T]:
         """
-        Process items in batches.
+        Process items in batches asynchronously.
         
         Args:
             items: List of items to process
@@ -186,51 +209,32 @@ class PerformanceOptimizer:
         
         for i in range(0, len(items), chunk_size):
             chunk = items[i:i + chunk_size]
-            chunk_results = [func(item) for item in chunk]
+            chunk_results = await asyncio.gather(
+                *(self._process_item(func, item) for item in chunk)
+            )
             results.extend(chunk_results)
             
         return results
         
-    def _process_batch_threaded(
+    async def _process_item(
         self,
-        batch: List[Any],
-        process_func: Callable[[Any], T]
-    ) -> List[T]:
-        """
-        Process batch using threads.
+        func: Callable[[Any], Union[T, Awaitable[T]]],
+        item: Any
+    ) -> T:
+        """Process a single item."""
+        result = func(item)
+        if asyncio.iscoroutine(result):
+            result = await result
+        return result
         
-        Args:
-            batch: List of items to process
-            process_func: Function to process each item
-            
-        Returns:
-            List of processed results
-        """
-        results = []
-        with ThreadPoolExecutor(max_workers=self.config.batch_config.max_workers) as executor:
-            future_to_item = {
-                executor.submit(process_func, item): item
-                for item in batch
-            }
-            
-            for future in as_completed(future_to_item):
-                try:
-                    result = future.result(timeout=self.config.batch_config.timeout)
-                    results.append(result)
-                except Exception as e:
-                    self.logger.error(f"Batch processing failed: {str(e)}")
-                    raise
-                    
-        return results
-        
-    def parallel_map(
+    async def parallel_map(
         self,
         items: List[Any],
-        func: Callable[[Any], T],
+        func: Callable[[Any], Union[T, Awaitable[T]]],
         chunk_size: Optional[int] = None
     ) -> List[T]:
         """
-        Map function over items in parallel.
+        Map function over items in parallel asynchronously.
         
         Args:
             items: List of items
@@ -243,30 +247,31 @@ class PerformanceOptimizer:
         if not items:
             return []
             
-        if not self.config.use_threading:
-            return [func(item) for item in items]
+        if not self.config.use_asyncio:
+            return await asyncio.gather(
+                *(self._process_item(func, item) for item in items)
+            )
             
         chunk_size = chunk_size or self.config.batch_config.batch_size
         results = []
         
-        with ThreadPoolExecutor(max_workers=self.config.batch_config.max_workers) as executor:
-            futures = []
-            for item in items:
-                futures.append(executor.submit(func, item))
-                
-            for future in futures:
-                results.append(future.result())
-                
+        for i in range(0, len(items), chunk_size):
+            chunk = items[i:i + chunk_size]
+            chunk_results = await asyncio.gather(
+                *(self._process_item(func, item) for item in chunk)
+            )
+            results.extend(chunk_results)
+            
         return results
         
-    def optimize_vector_operations(
+    async def optimize_vector_operations(
         self,
         vectors: Union[np.ndarray, List[List[float]]],
         operation: str,
         other_vectors: Optional[Union[np.ndarray, List[List[float]]]] = None
     ) -> Union[np.ndarray, float]:
         """
-        Optimize vector operations.
+        Optimize vector operations asynchronously.
         
         Args:
             vectors: Input vectors
@@ -276,74 +281,79 @@ class PerformanceOptimizer:
         Returns:
             Operation result
         """
-        if isinstance(vectors, list):
+        # Convert to numpy array if needed
+        if not isinstance(vectors, np.ndarray):
             vectors = np.array(vectors)
-            
-        if other_vectors is not None and isinstance(other_vectors, list):
+        if other_vectors is not None and not isinstance(other_vectors, np.ndarray):
             other_vectors = np.array(other_vectors)
             
+        # Perform operation
         if operation == "normalize":
-            # Handle single vector
-            if vectors.ndim == 1:
-                norm = np.linalg.norm(vectors)
-                if norm > 0:
-                    return vectors / norm
-                return vectors
-                
-            # Handle multiple vectors
-            norms = np.linalg.norm(vectors, axis=1, keepdims=True)
-            return np.divide(vectors, norms, where=norms > 0)
-            
+            return await asyncio.to_thread(
+                lambda: vectors / np.linalg.norm(vectors, axis=1, keepdims=True)
+            )
         elif operation == "dot":
             if other_vectors is None:
                 raise ValueError("Other vectors required for dot product")
-            return np.dot(vectors, other_vectors)
-            
+            return await asyncio.to_thread(
+                lambda: np.dot(vectors, other_vectors.T)
+            )
         elif operation == "cosine":
             if other_vectors is None:
                 raise ValueError("Other vectors required for cosine similarity")
-            # Normalize vectors
-            v1 = self.optimize_vector_operations(vectors, "normalize")
-            v2 = self.optimize_vector_operations(other_vectors, "normalize")
-            return np.dot(v1, v2)
-            
+            return await asyncio.to_thread(
+                lambda: np.dot(vectors, other_vectors.T) / (
+                    np.linalg.norm(vectors, axis=1, keepdims=True) *
+                    np.linalg.norm(other_vectors, axis=1, keepdims=True).T
+                )
+            )
         else:
             raise ValueError(f"Unsupported operation: {operation}")
             
-    def profile_operation(self, func: Callable, *args, **kwargs) -> Tuple[Any, Dict[str, Any]]:
-        """Profile an operation's execution time and memory usage."""
-        start_time = time.time()
-        start_memory = self._get_memory_usage()
+    async def profile_operation(
+        self,
+        func: Callable[..., Union[T, Awaitable[T]]],
+        *args,
+        **kwargs
+    ) -> Tuple[T, Dict[str, Any]]:
+        """
+        Profile operation execution asynchronously.
         
-        try:
-            result = func(*args, **kwargs)
-            end_time = time.time()
-            end_memory = self._get_memory_usage()
+        Args:
+            func: Function to profile
+            args: Positional arguments
+            kwargs: Keyword arguments
             
-            profile = {
-                "execution_time": end_time - start_time,
-                "memory_usage": end_memory - start_memory,
-                "success": True
-            }
-            return result, profile
+        Returns:
+            Tuple of (result, metrics)
+        """
+        start_time = time.time()
+        start_memory = await self._get_memory_usage()
+        
+        # Execute function
+        result = func(*args, **kwargs)
+        if asyncio.iscoroutine(result):
+            result = await result
             
-        except Exception as e:
-            end_time = time.time()
-            end_memory = self._get_memory_usage()
-            
-            profile = {
-                "execution_time": end_time - start_time,
-                "memory_usage": end_memory - start_memory,
-                "success": False,
-                "error": str(e)
-            }
-            raise
-            
-    def _get_memory_usage(self) -> int:
-        """Get current memory usage in bytes."""
-        try:
-            import psutil
-            process = psutil.Process()
-            return process.memory_info().rss
-        except ImportError:
-            return 0 
+        end_time = time.time()
+        end_memory = await self._get_memory_usage()
+        
+        # Calculate metrics
+        metrics = {
+            "execution_time": end_time - start_time,
+            "memory_usage": end_memory - start_memory,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        return result, metrics
+        
+    async def _get_memory_usage(self) -> int:
+        """
+        Get current memory usage in bytes.
+        
+        Returns:
+            Memory usage in bytes
+        """
+        import psutil
+        process = psutil.Process()
+        return process.memory_info().rss 

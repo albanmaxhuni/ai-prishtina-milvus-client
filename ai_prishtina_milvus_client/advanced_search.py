@@ -1,5 +1,5 @@
 """
-Advanced search features for Milvus operations including hybrid search, filtering, and ranking.
+Advanced search features for Milvus operations including hybrid search, filtering, and ranking with async support.
 """
 
 from typing import List, Dict, Any, Optional, Union, Tuple
@@ -7,6 +7,7 @@ import numpy as np
 from pydantic import BaseModel, Field
 import logging
 from datetime import datetime
+import asyncio
 
 class SearchConfig(BaseModel):
     """Configuration for search operations."""
@@ -51,7 +52,7 @@ class AdvancedSearch:
         self.search_config = search_config or SearchConfig()
         self.logger = logging.getLogger(__name__)
         
-    def hybrid_search(
+    async def hybrid_search(
         self,
         collection_name: str,
         vector: List[float],
@@ -61,7 +62,7 @@ class AdvancedSearch:
         ranking_configs: Optional[List[RankingConfig]] = None
     ) -> List[Dict[str, Any]]:
         """
-        Perform hybrid search combining vector and text search.
+        Perform hybrid search combining vector and text search asynchronously.
         
         Args:
             collection_name: Name of collection to search
@@ -82,10 +83,10 @@ class AdvancedSearch:
             }
             
             # Prepare filter expression
-            expr = self._build_filter_expression(filter_configs) if filter_configs else None
+            expr = await self._build_filter_expression(filter_configs) if filter_configs else None
             
             # Perform vector search
-            vector_results = self.client.search(
+            vector_results = await self.client.search(
                 collection_name=collection_name,
                 data=[vector],
                 anns_field="vector",
@@ -96,7 +97,7 @@ class AdvancedSearch:
             
             # Perform text search if hybrid search is enabled
             if search_config.use_hybrid:
-                text_results = self._perform_text_search(
+                text_results = await self._perform_text_search(
                     collection_name,
                     text_query,
                     search_config,
@@ -104,7 +105,7 @@ class AdvancedSearch:
                 )
                 
                 # Combine results
-                results = self._combine_search_results(
+                results = await self._combine_search_results(
                     vector_results,
                     text_results,
                     search_config.hybrid_weight
@@ -114,10 +115,10 @@ class AdvancedSearch:
                 
             # Apply ranking if configured
             if ranking_configs:
-                results = self._apply_ranking(results, ranking_configs)
+                results = await self._apply_ranking(results, ranking_configs)
                 
             # Filter by score
-            results = self._filter_by_score(
+            results = await self._filter_by_score(
                 results,
                 search_config.min_score,
                 search_config.max_score
@@ -129,9 +130,9 @@ class AdvancedSearch:
             self.logger.error(f"Hybrid search failed: {str(e)}")
             raise
             
-    def _build_filter_expression(self, filter_configs: List[FilterConfig]) -> str:
+    async def _build_filter_expression(self, filter_configs: List[FilterConfig]) -> str:
         """
-        Build filter expression from configurations.
+        Build filter expression from configurations asynchronously.
         
         Args:
             filter_configs: List of filter configurations
@@ -156,7 +157,7 @@ class AdvancedSearch:
         logical_op = filter_configs[0].logical_operator or "and"
         return f" {logical_op} ".join(f"({expr})" for expr in expressions)
         
-    def _perform_text_search(
+    async def _perform_text_search(
         self,
         collection_name: str,
         text_query: str,
@@ -164,7 +165,7 @@ class AdvancedSearch:
         filter_configs: Optional[List[FilterConfig]] = None
     ) -> List[Dict[str, Any]]:
         """
-        Perform text search.
+        Perform text search asynchronously.
         
         Args:
             collection_name: Name of collection to search
@@ -180,14 +181,14 @@ class AdvancedSearch:
         # or Milvus's text search capabilities
         return []
         
-    def _combine_search_results(
+    async def _combine_search_results(
         self,
         vector_results: List[Dict[str, Any]],
         text_results: List[Dict[str, Any]],
         hybrid_weight: float
     ) -> List[Dict[str, Any]]:
         """
-        Combine vector and text search results.
+        Combine vector and text search results asynchronously.
         
         Args:
             vector_results: Vector search results
@@ -237,13 +238,13 @@ class AdvancedSearch:
             r["score"] = r["combined_score"]
         return results
         
-    def _apply_ranking(
+    async def _apply_ranking(
         self,
         results: List[Dict[str, Any]],
         ranking_configs: List[RankingConfig]
     ) -> List[Dict[str, Any]]:
         """
-        Apply ranking to search results.
+        Apply ranking to search results asynchronously.
         
         Args:
             results: Search results
@@ -267,14 +268,14 @@ class AdvancedSearch:
         
         return results
         
-    def _filter_by_score(
+    async def _filter_by_score(
         self,
         results: List[Dict[str, Any]],
         min_score: float,
         max_score: float
     ) -> List[Dict[str, Any]]:
         """
-        Filter results by score.
+        Filter results by score asynchronously.
         
         Args:
             results: Search results
@@ -289,7 +290,7 @@ class AdvancedSearch:
             if min_score <= result["combined_score"] <= max_score
         ]
         
-    def search_by_date_range(
+    async def search_by_date_range(
         self,
         collection_name: str,
         start_date: datetime,
@@ -297,7 +298,7 @@ class AdvancedSearch:
         date_field: str = "created_at"
     ) -> List[Dict[str, Any]]:
         """
-        Search by date range.
+        Search by date range asynchronously.
         
         Args:
             collection_name: Name of collection to search
@@ -310,18 +311,18 @@ class AdvancedSearch:
         """
         expr = f"{date_field} >= '{start_date.isoformat()}' and {date_field} <= '{end_date.isoformat()}'"
         
-        return self.client.query(
+        return await self.client.query(
             collection_name=collection_name,
             expr=expr
         )
         
-    def search_by_metadata(
+    async def search_by_metadata(
         self,
         collection_name: str,
         metadata: Dict[str, Any]
     ) -> List[Dict[str, Any]]:
         """
-        Search by metadata.
+        Search by metadata asynchronously.
         
         Args:
             collection_name: Name of collection to search
@@ -342,7 +343,7 @@ class AdvancedSearch:
             
         expr = " and ".join(f"({e})" for e in expressions)
         
-        return self.client.query(
+        return await self.client.query(
             collection_name=collection_name,
             expr=expr
         ) 

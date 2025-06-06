@@ -1,12 +1,17 @@
 """
-Advanced Milvus features including partitions, hybrid queries, and more.
+Advanced Milvus features including partitions, hybrid queries, and more with async support.
 """
 
 from typing import Any, Dict, List, Optional, Union
 from pydantic import BaseModel, Field
+import asyncio
+import logging
+from datetime import datetime, timedelta
+import json
 
-from .client import MilvusClient
+from .client import AsyncMilvusClient
 from .config import MilvusConfig
+from .exceptions import AdvancedOperationError
 
 
 class PartitionConfig(BaseModel):
@@ -25,7 +30,7 @@ class HybridQueryConfig(BaseModel):
     params: Optional[Dict[str, Any]] = Field(None, description="Search parameters")
 
 
-class AdvancedMilvusClient(MilvusClient):
+class AdvancedMilvusClient(AsyncMilvusClient):
     """Advanced Milvus client with additional features."""
     
     def __init__(self, config: Union[str, MilvusConfig]):
@@ -33,10 +38,10 @@ class AdvancedMilvusClient(MilvusClient):
         super().__init__(config)
         self.collection = self._get_collection()
         
-    def create_partition(self, partition_config: PartitionConfig) -> None:
-        """Create a new partition."""
+    async def create_partition(self, partition_config: PartitionConfig) -> None:
+        """Create a new partition asynchronously."""
         try:
-            self.collection.create_partition(
+            await self.collection.create_partition(
                 partition_name=partition_config.partition_name,
                 description=partition_config.description,
                 tags=partition_config.tags
@@ -44,17 +49,17 @@ class AdvancedMilvusClient(MilvusClient):
         except Exception as e:
             raise Exception(f"Failed to create partition: {str(e)}")
             
-    def drop_partition(self, partition_name: str) -> None:
-        """Drop a partition."""
+    async def drop_partition(self, partition_name: str) -> None:
+        """Drop a partition asynchronously."""
         try:
-            self.collection.drop_partition(partition_name)
+            await self.collection.drop_partition(partition_name)
         except Exception as e:
             raise Exception(f"Failed to drop partition: {str(e)}")
             
-    def list_partitions(self) -> List[Dict[str, Any]]:
-        """List all partitions."""
+    async def list_partitions(self) -> List[Dict[str, Any]]:
+        """List all partitions asynchronously."""
         try:
-            partitions = self.collection.partitions
+            partitions = await self.collection.partitions
             return [
                 {
                     "name": p.name,
@@ -67,14 +72,14 @@ class AdvancedMilvusClient(MilvusClient):
         except Exception as e:
             raise Exception(f"Failed to list partitions: {str(e)}")
             
-    def hybrid_search(
+    async def hybrid_search(
         self,
         vectors: List[List[float]],
         query_config: HybridQueryConfig,
         partition_names: Optional[List[str]] = None,
         **kwargs
     ) -> List[Dict[str, Any]]:
-        """Perform hybrid search with vector and scalar filtering."""
+        """Perform hybrid search with vector and scalar filtering asynchronously."""
         try:
             # Build search parameters
             search_params = {
@@ -92,7 +97,7 @@ class AdvancedMilvusClient(MilvusClient):
             filter_expr = " and ".join(scalar_filters) if scalar_filters else None
             
             # Perform search
-            results = self.collection.search(
+            results = await self.collection.search(
                 data=vectors,
                 anns_field=query_config.vector_field,
                 param=search_params,
@@ -122,16 +127,16 @@ class AdvancedMilvusClient(MilvusClient):
         except Exception as e:
             raise Exception(f"Failed to perform hybrid search: {str(e)}")
             
-    def create_index(
+    async def create_index(
         self,
         field_name: str,
         index_type: str,
         metric_type: str,
         params: Optional[Dict[str, Any]] = None
     ) -> None:
-        """Create an index on a field."""
+        """Create an index on a field asynchronously."""
         try:
-            self.collection.create_index(
+            await self.collection.create_index(
                 field_name=field_name,
                 index_type=index_type,
                 metric_type=metric_type,
@@ -140,17 +145,17 @@ class AdvancedMilvusClient(MilvusClient):
         except Exception as e:
             raise Exception(f"Failed to create index: {str(e)}")
             
-    def drop_index(self, field_name: str) -> None:
-        """Drop an index from a field."""
+    async def drop_index(self, field_name: str) -> None:
+        """Drop an index from a field asynchronously."""
         try:
-            self.collection.drop_index(field_name)
+            await self.collection.drop_index(field_name)
         except Exception as e:
             raise Exception(f"Failed to drop index: {str(e)}")
             
-    def get_index_info(self, field_name: str) -> Dict[str, Any]:
-        """Get index information for a field."""
+    async def get_index_info(self, field_name: str) -> Dict[str, Any]:
+        """Get index information for a field asynchronously."""
         try:
-            index = self.collection.index(field_name)
+            index = await self.collection.index(field_name)
             return {
                 "field_name": index.field_name,
                 "index_type": index.index_type,
@@ -160,24 +165,24 @@ class AdvancedMilvusClient(MilvusClient):
         except Exception as e:
             raise Exception(f"Failed to get index info: {str(e)}")
             
-    def load_partition(self, partition_name: str) -> None:
-        """Load a partition into memory."""
+    async def load_partition(self, partition_name: str) -> None:
+        """Load a partition into memory asynchronously."""
         try:
-            self.collection.load_partition(partition_name)
+            await self.collection.load_partition(partition_name)
         except Exception as e:
             raise Exception(f"Failed to load partition: {str(e)}")
             
-    def release_partition(self, partition_name: str) -> None:
-        """Release a partition from memory."""
+    async def release_partition(self, partition_name: str) -> None:
+        """Release a partition from memory asynchronously."""
         try:
-            self.collection.release_partition(partition_name)
+            await self.collection.release_partition(partition_name)
         except Exception as e:
             raise Exception(f"Failed to release partition: {str(e)}")
             
-    def get_partition_stats(self, partition_name: str) -> Dict[str, Any]:
-        """Get statistics for a partition."""
+    async def get_partition_stats(self, partition_name: str) -> Dict[str, Any]:
+        """Get statistics for a partition asynchronously."""
         try:
-            partition = self.collection.partition(partition_name)
+            partition = await self.collection.partition(partition_name)
             return {
                 "name": partition.name,
                 "description": partition.description,
@@ -188,17 +193,17 @@ class AdvancedMilvusClient(MilvusClient):
         except Exception as e:
             raise Exception(f"Failed to get partition stats: {str(e)}")
             
-    def compact(self) -> None:
-        """Compact the collection to remove deleted entities."""
+    async def compact(self) -> None:
+        """Compact the collection to remove deleted entities asynchronously."""
         try:
-            self.collection.compact()
+            await self.collection.compact()
         except Exception as e:
             raise Exception(f"Failed to compact collection: {str(e)}")
             
-    def get_compaction_state(self) -> Dict[str, Any]:
-        """Get the current compaction state."""
+    async def get_compaction_state(self) -> Dict[str, Any]:
+        """Get the current compaction state asynchronously."""
         try:
-            state = self.collection.get_compaction_state()
+            state = await self.collection.get_compaction_state()
             return {
                 "state": state.state,
                 "executing_plans": state.executing_plans,

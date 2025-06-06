@@ -1,13 +1,14 @@
 """
-Configuration management for the Milvus client.
+Configuration management for the Milvus client with async support.
 """
 
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Awaitable
 
 import yaml
+import aiofiles
 from pydantic import BaseModel, Field
 
 
@@ -27,9 +28,9 @@ class MilvusConfig(BaseModel):
     metadata_fields: Optional[list] = Field(default=None, description="List of metadata fields for the collection schema. Each field should be a dict with 'name' and 'type'.")
     
     @classmethod
-    def from_yaml(cls, config_path: str) -> "MilvusConfig":
+    async def from_yaml(cls, config_path: str) -> "MilvusConfig":
         """
-        Load configuration from a YAML file.
+        Load configuration from a YAML file asynchronously.
         
         Args:
             config_path: Path to the YAML configuration file
@@ -45,17 +46,18 @@ class MilvusConfig(BaseModel):
         if not config_path.exists():
             raise FileNotFoundError(f"Configuration file not found: {config_path}")
             
-        with open(config_path) as f:
-            config_data = yaml.safe_load(f)
+        async with aiofiles.open(config_path) as f:
+            content = await f.read()
+            config_data = yaml.safe_load(content)
             
         if "milvus" not in config_data:
             raise ValueError("Configuration file must contain a 'milvus' section")
             
         return cls(**config_data["milvus"])
     
-    def to_yaml(self, config_path: str) -> None:
+    async def to_yaml(self, config_path: str) -> None:
         """
-        Save configuration to a YAML file.
+        Save configuration to a YAML file asynchronously.
         
         Args:
             config_path: Path to save the YAML configuration file
@@ -63,5 +65,5 @@ class MilvusConfig(BaseModel):
         config_path = Path(config_path)
         config_data = {"milvus": self.model_dump()}
         
-        with open(config_path, "w") as f:
-            yaml.dump(config_data, f, default_flow_style=False) 
+        async with aiofiles.open(config_path, "w") as f:
+            await f.write(yaml.dump(config_data, default_flow_style=False)) 

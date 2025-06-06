@@ -7,6 +7,8 @@ import pytest
 from unittest.mock import MagicMock, patch
 import json
 import time
+import asyncio
+from typing import List, Dict, Any
 
 from ai_prishtina_milvus_client import (
     MilvusConfig,
@@ -17,6 +19,8 @@ from ai_prishtina_milvus_client import (
     KafkaStreamProcessor,
     StreamMessage
 )
+from ai_prishtina_milvus_client.advanced import AdvancedOperations, AdvancedConfig
+from ai_prishtina_milvus_client.exceptions import AdvancedOperationError
 
 
 @pytest.fixture
@@ -262,4 +266,250 @@ def test_kafka_stream_processor(mock_producer, mock_consumer, config, stream_con
     time.sleep(0.1)  # Allow time for processing
     processor.stop()
     
-    mock_consumer.return_value.close.assert_called_once() 
+    mock_consumer.return_value.close.assert_called_once()
+
+
+@pytest.fixture
+async def advanced_ops(milvus_config: MilvusConfig):
+    """Create advanced operations instance."""
+    config = AdvancedConfig(
+        batch_size=100,
+        timeout=30.0,
+        max_retries=3,
+        retry_delay=1.0,
+        use_transactions=True,
+        validate_results=True
+    )
+    ops = AdvancedOperations(milvus_config, config)
+    yield ops
+    await ops.cleanup()
+
+
+@pytest.fixture
+async def test_collection(advanced_ops: AdvancedOperations):
+    """Create test collection."""
+    collection_name = "test_advanced"
+    dim = 128
+    
+    # Create collection
+    await advanced_ops.client.create_collection(
+        collection_name=collection_name,
+        dimension=dim,
+        index_type="IVF_FLAT",
+        metric_type="L2"
+    )
+    
+    yield collection_name
+    
+    # Cleanup
+    await advanced_ops.client.drop_collection(collection_name)
+
+
+@pytest.fixture
+def test_vectors() -> List[List[float]]:
+    """Generate test vectors."""
+    return [np.random.rand(128).tolist() for _ in range(1000)]
+
+
+@pytest.fixture
+def test_metadata() -> List[Dict[str, Any]]:
+    """Generate test metadata."""
+    return [{"value": i} for i in range(1000)]
+
+
+@pytest.mark.asyncio
+async def test_bulk_insert(
+    advanced_ops: AdvancedOperations,
+    test_collection: str,
+    test_vectors: List[List[float]],
+    test_metadata: List[Dict[str, Any]]
+):
+    """Test bulk insert operation."""
+    # Insert vectors
+    inserted_ids = await advanced_ops.bulk_insert(
+        collection_name=test_collection,
+        vectors=test_vectors,
+        metadata=test_metadata
+    )
+    
+    # Verify results
+    assert len(inserted_ids) == len(test_vectors)
+    
+    # Query inserted vectors
+    collection = await advanced_ops.client.get_collection(test_collection)
+    results = await collection.query(
+        expr=f"id in {inserted_ids[:10]}",
+        output_fields=["id", "value"]
+    )
+    
+    assert len(results) == 10
+    for result in results:
+        assert result["id"] in inserted_ids
+        assert "value" in result
+
+
+@pytest.mark.asyncio
+async def test_bulk_delete(
+    advanced_ops: AdvancedOperations,
+    test_collection: str,
+    test_vectors: List[List[float]],
+    test_metadata: List[Dict[str, Any]]
+):
+    """Test bulk delete operation."""
+    # Insert vectors
+    inserted_ids = await advanced_ops.bulk_insert(
+        collection_name=test_collection,
+        vectors=test_vectors,
+        metadata=test_metadata
+    )
+    
+    # Delete vectors
+    expr = "value < 500"
+    deleted_count = await advanced_ops.bulk_delete(
+        collection_name=test_collection,
+        expr=expr
+    )
+    
+    # Verify results
+    assert deleted_count > 0
+    
+    # Query remaining vectors
+    collection = await advanced_ops.client.get_collection(test_collection)
+    results = await collection.query(
+        expr=expr,
+        output_fields=["id", "value"]
+    )
+    
+    assert len(results) == 0
+
+
+@pytest.mark.asyncio
+async def test_bulk_update(
+    advanced_ops: AdvancedOperations,
+    test_collection: str,
+    test_vectors: List[List[float]],
+    test_metadata: List[Dict[str, Any]]
+):
+    """Test bulk update operation."""
+    # Insert vectors
+    inserted_ids = await advanced_ops.bulk_insert(
+        collection_name=test_collection,
+        vectors=test_vectors,
+        metadata=test_metadata
+    )
+    
+    # Update vectors
+    expr = "value < 500"
+    update_data = {"value": 999}
+    updated_count = await advanced_ops.bulk_update(
+        collection_name=test_collection,
+        expr=expr,
+        data=update_data
+    )
+    
+    # Verify results
+    assert updated_count > 0
+    
+    # Query updated vectors
+    collection = await advanced_ops.client.get_collection(test_collection)
+    results = await collection.query(
+        expr=expr,
+        output_fields=["id", "value"]
+    )
+    
+    assert len(results) == 0
+    
+    # Query vectors with new value
+    results = await collection.query(
+        expr="value == 999",
+        output_fields=["id", "value"]
+    )
+    
+    assert len(results) == updated_count
+    for result in results:
+        assert result["value"] == 999
+
+
+@pytest.mark.asyncio
+async def test_transaction_rollback(
+    advanced_ops: AdvancedOperations,
+    test_collection: str,
+    test_vectors: List[List[float]],
+    test_metadata: List[Dict[str, Any]]
+):
+    """Test transaction rollback on error."""
+    # Insert vectors
+    inserted_ids = await advanced_ops.bulk_insert(
+        collection_name=test_collection,
+        vectors=test_vectors,
+        metadata=test_metadata
+    )
+    
+    # Try to update with invalid data
+    expr = "value < 500"
+    update_data = {"invalid_field": 999}
+    
+    with pytest.raises(AdvancedOperationError):
+        await advanced_ops.bulk_update(
+            collection_name=test_collection,
+            expr=expr,
+            data=update_data
+        )
+    
+    # Verify no changes were made
+    collection = await advanced_ops.client.get_collection(test_collection)
+    results = await collection.query(
+        expr=expr,
+        output_fields=["id", "value"]
+    )
+    
+    assert len(results) > 0
+    for result in results:
+        assert result["value"] < 500
+
+
+@pytest.mark.asyncio
+async def test_validation_failure(
+    advanced_ops: AdvancedOperations,
+    test_collection: str,
+    test_vectors: List[List[float]],
+    test_metadata: List[Dict[str, Any]]
+):
+    """Test validation failure."""
+    # Insert vectors
+    inserted_ids = await advanced_ops.bulk_insert(
+        collection_name=test_collection,
+        vectors=test_vectors,
+        metadata=test_metadata
+    )
+    
+    # Delete collection to cause validation failure
+    await advanced_ops.client.drop_collection(test_collection)
+    
+    # Try to validate insert
+    with pytest.raises(AdvancedOperationError):
+        await advanced_ops._validate_insert(
+            collection_name=test_collection,
+            inserted_ids=inserted_ids
+        )
+
+
+@pytest.mark.asyncio
+async def test_context_manager(
+    milvus_config: MilvusConfig,
+    test_collection: str,
+    test_vectors: List[List[float]],
+    test_metadata: List[Dict[str, Any]]
+):
+    """Test context manager."""
+    config = AdvancedConfig()
+    
+    async with AdvancedOperations(milvus_config, config) as ops:
+        # Insert vectors
+        inserted_ids = await ops.bulk_insert(
+            collection_name=test_collection,
+            vectors=test_vectors,
+            metadata=test_metadata
+        )
+        
+        assert len(inserted_ids) == len(test_vectors) 
