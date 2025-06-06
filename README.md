@@ -20,6 +20,7 @@ Email: [alban.q.maxhuni@gmail.com](mailto:alban.q.maxhuni@gmail.com) | [info@alb
 - **Metadata Support**: Flexible metadata storage and querying alongside vectors
 - **Type Safety**: Comprehensive type hints and runtime validation using Pydantic
 - **Error Handling**: Robust error recovery and graceful degradation
+- **Data Validation**: Built-in vector and metadata validation with configurable rules
 
 ### AI Integration
 - **Multiple API Providers**: Native support for:
@@ -29,20 +30,26 @@ Email: [alban.q.maxhuni@gmail.com](mailto:alban.q.maxhuni@gmail.com) | [info@alb
   - Custom model endpoints
 - **Embedding Generation**: Automatic vector generation from text, images, and audio
 - **Hybrid Search**: Combine vector similarity with metadata filtering
+- **Vector Normalization**: Automatic vector normalization and dimension validation
 
 ### Advanced Features
 - **Streaming Support**: Real-time vector ingestion through Kafka
 - **Partition Management**: Efficient data organization and querying
 - **Advanced Indexing**: Support for multiple index types (IVF_FLAT, HNSW, etc.)
 - **Collection Compaction**: Automatic data optimization
-- **Batch Operations**: Efficient bulk data processing
+- **Batch Operations**: Efficient bulk data processing with progress tracking
 - **Cloud Storage Integration**: Native support for S3, GCP, and Azure
+- **Async Support**: Full async/await support for all operations
 
 ### Enterprise Features
 - **Security**: Role-based access control and data encryption
 - **Monitoring**: Comprehensive metrics collection and monitoring
+  - Performance metrics (query latency, throughput)
+  - System metrics (CPU, memory, disk usage)
+  - Custom metric collection
 - **Backup & Recovery**: Automated backup and disaster recovery
 - **Performance Optimization**: Query optimization and caching
+- **Error Recovery**: Configurable retry policies and backup strategies
 
 ## Installation
 
@@ -52,21 +59,39 @@ pip install ai-prishtina-milvus-client
 
 # With optional dependencies
 pip install ai-prishtina-milvus-client[all]
+
+# Development installation
+pip install -e ".[dev]"
 ```
 
 ## Quick Start
 
 ```python
-from ai_prishtina_milvus_client import MilvusClient, MilvusConfig
+from ai_prishtina_milvus_client import (
+    MilvusClient,
+    MilvusConfig,
+    VectorValidationConfig,
+    MonitoringConfig
+)
 
-# Configure client
+# Configure client with validation and monitoring
 config = MilvusConfig(
     host="localhost",
     port=19530,
     collection_name="my_collection",
     dimension=128,
     index_type="IVF_FLAT",
-    metric_type="L2"
+    metric_type="L2",
+    vector_validation=VectorValidationConfig(
+        expected_dim=128,
+        normalize=True,
+        check_type=True
+    ),
+    monitoring=MonitoringConfig(
+        collect_system_metrics=True,
+        metrics_history_size=1000,
+        collection_interval=1.0
+    )
 )
 
 # Initialize client
@@ -86,6 +111,48 @@ results = client.search(
 ```
 
 ## Advanced Usage
+
+### Data Validation
+
+```python
+from ai_prishtina_milvus_client import DataValidator, VectorValidationConfig
+
+# Configure validation
+validator = DataValidator(
+    config=VectorValidationConfig(
+        expected_dim=128,
+        normalize=True,
+        check_type=True
+    )
+)
+
+# Validate vectors before insertion
+valid_vectors, errors = await validator.validate_data(vectors)
+```
+
+### Monitoring and Metrics
+
+```python
+from ai_prishtina_milvus_client import MetricsCollector, MonitoringConfig
+
+# Configure monitoring
+collector = MetricsCollector(
+    config=MonitoringConfig(
+        collect_system_metrics=True,
+        metrics_history_size=1000,
+        collection_interval=1.0
+    )
+)
+
+# Start collecting metrics
+await collector.start()
+
+# Get performance metrics
+perf_metrics = await collector.get_performance_metrics()
+
+# Get system metrics
+sys_metrics = await collector.get_system_metrics()
+```
 
 ### Streaming with Kafka
 
@@ -155,6 +222,8 @@ client.import_from_cloud(
 - [Examples](examples/)
 - [Performance Tuning](docs/performance.md)
 - [Security Guide](docs/security.md)
+- [Monitoring Guide](docs/monitoring.md)
+- [Data Validation Guide](docs/validation.md)
 
 ## Development
 
